@@ -4,25 +4,18 @@ import asyncio
 import threading
 from flask import Flask, jsonify, request
 
-# ============================================================
-# IMPORT DE TON BOT
-# ============================================================
-from rocket_sniper import RealSniperBot   # adapte si le fichier a un autre nom
+# ✅ IMPORTANT: adapte si ton fichier/classe a un autre nom
+from rocket_sniper import RealSniperBot
 
 app = Flask(__name__)
 
-# ============================================================
-# VARIABLES GLOBALES
-# ============================================================
-bot_instance: RealSniperBot | None = None
-bot_thread: threading.Thread | None = None
-bot_loop: asyncio.AbstractEventLoop | None = None
+bot_instance = None
+bot_thread = None
+bot_loop = None
 
 BOT_AVAILABLE = True
 
-# ============================================================
-# GESTION THREAD / EVENT LOOP
-# ============================================================
+
 def run_bot():
     global bot_instance, bot_loop
     try:
@@ -33,8 +26,12 @@ def run_bot():
     except Exception as e:
         print(f"❌ Erreur bot: {e}")
     finally:
-        if bot_loop and not bot_loop.is_closed():
-            bot_loop.close()
+        try:
+            if bot_loop and not bot_loop.is_closed():
+                bot_loop.close()
+        except:
+            pass
+
 
 def start_bot_internal():
     global bot_thread
@@ -43,104 +40,125 @@ def start_bot_internal():
 
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    time.sleep(2)
     return True, "Bot démarré"
+
 
 def stop_bot_internal():
     global bot_instance
-    if bot_instance and bot_instance.running:
+    if bot_instance and getattr(bot_instance, "running", False):
         bot_instance.running = False
         return True
     return False
 
-# ============================================================
-# ROUTES API
-# ============================================================
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "online",
         "service": "Rocket Sniper Bot API",
-        "bot_running": bot_instance.running if bot_instance else False,
         "bot_available": BOT_AVAILABLE,
-        "endpoints": {
-            "/start": "POST",
-            "/stop": "POST",
-            "/status": "GET",
-            "/scan": "GET",
-            "/toggle-auto": "GET / POST",
-            "/buy": "POST",
-            "/health": "GET"
-        }
+        "bot_running": bool(bot_instance and getattr(bot_instance, "running", False)),
+        "endpoints": [
+            "/start (POST)",
+            "/stop (POST)",
+            "/status (GET)",
+            "/scan (GET)",
+            "/toggle-auto (GET/POST)",
+            "/buy (POST)",
+            "/health (GET)",
+        ]
     })
+
 
 @app.route("/start", methods=["POST"])
 def start_bot():
     if not BOT_AVAILABLE:
         return jsonify({"success": False, "message": "Bot non disponible"}), 500
 
-    success, message = start_bot_internal()
+    ok, msg = start_bot_internal()
     return jsonify({
-        "success": success,
-        "message": message,
-        "bot_running": bot_instance.running if bot_instance else False
+        "success": ok,
+        "message": msg,
+        "bot_running": bool(bot_instance and getattr(bot_instance, "running", False)),
     })
+
 
 @app.route("/stop", methods=["POST"])
 def stop_bot():
-    success = stop_bot_internal()
+    ok = stop_bot_internal()
     return jsonify({
-        "success": success,
+        "success": ok,
+        "message": "Bot arrêté" if ok else "Bot déjà arrêté",
         "bot_running": False,
-        "message": "Bot arrêté" if success else "Bot déjà arrêté"
     })
 
-@app.route("/status", methods=["GET"])
-def status():
-    if not bot_instance:
-        return jsonify({
-            "server": "online",
-            "bot": {"running": False, "available": True}
-        })
-
-    engine = bot_instance.engine
-    wallet = bot_instance.wallet
-
-    return jsonify({
-        "server": "online",
-        "timestamp": time.time(),
-        "bot": {
-            "running": bot_instance.running,
-            "available": True,
-            "auto_trading": engine.auto_trading if engine else False,
-            "stats": engine.stats if engine else {}
-        },
-        "config": {
-            "auto_buy_amount": engine.AUTO_BUY_AMOUNT if engine else None
-        },
-        "wallet": {
-            "address": wallet.address if wallet else None,
-            "balance_sol": wallet.balance if wallet else None
-        }
-    })
 
 @app.route("/toggle-auto", methods=["GET", "POST"])
 def toggle_auto():
-    if not bot_instance or not bot_instance.engine:
-        return jsonify({"success": False, "message": "Bot non démarré"}), 400
+    if not bot_instance or not getattr(bot_instance, "engine", None):
+        return jsonify({"success": False, "message": "Bot non démarré / engine pas prêt"}), 400
 
-    bot_instance.engine.auto_trading = not bot_instance.engine.auto_trading
+    engine = bot_instance.engine
+    engine.auto_trading = not bool(getattr(engine, "auto_trading", False))
 
     return jsonify({
         "success": True,
-        "auto_trading": bot_instance.engine.auto_trading,
-        "message": f"Auto-trading {'activé' if bot_instance.engine.auto_trading else 'désactivé'}"
+        "auto_trading": engine.auto_trading,
+        "message": f"Auto-trading {'activé' if engine.auto_trading else 'désactivé'}"
     })
+
+
+@app.route("/status", methods=["GET"])
+def status():
+    # ✅ ROUTE SAFE: jamais de crash
+    try:
+        running = bool(bot_instance and getattr(bot_instance, "running", False))
+        engine = getattr(bot_instance, "engine", None) if bot_instance else None
+        wallet = getattr(bot_instance, "wallet", None) if bot_instance else None
+
+        auto_trading = bool(getattr(engine, "auto_trading", False)) if engine else False
+        stats = getattr(engine, "stats", {}) if engine else {}
+
+        addr = getattr(wallet, "address", None) if wallet else None
+
+        # balance_sol: on essaie, sinon 0 sans casser
+        balance_sol = 0.0
+        try:
+            bal = getattr(wallet, "balance", None)
+            if isinstance(bal, (int, float)):
+                balance_sol = float(bal)
+        except:
+            pass
+
+        return jsonify({
+            "server": "online",
+            "timestamp": time.time(),
+            "bot": {
+                "available": True,
+                "running": running,
+                "auto_trading": auto_trading,
+                "stats": stats
+            },
+            "wallet": {
+                "address": addr,
+                "balance_sol": balance_sol
+            }
+        })
+    except Exception as e:
+        # même ici: on renvoie un JSON propre
+        return jsonify({
+            "server": "online",
+            "success": False,
+            "error": f"/status crash: {str(e)}"
+        }), 200
+
 
 @app.route("/scan", methods=["GET"])
 def scan():
-    if not bot_instance or not bot_instance.running:
+    if not bot_instance or not getattr(bot_instance, "running", False):
         return jsonify({"success": False, "message": "Bot non démarré"}), 400
+    if not getattr(bot_instance, "engine", None):
+        return jsonify({"success": False, "message": "Engine pas prêt"}), 400
 
     async def do_scan():
         return await bot_instance.engine.scan_dexscreener()
@@ -155,12 +173,15 @@ def scan():
         "tokens": tokens[:5]
     })
 
+
 @app.route("/buy", methods=["POST"])
 def buy():
-    if not bot_instance or not bot_instance.running:
+    if not bot_instance or not getattr(bot_instance, "running", False):
         return jsonify({"success": False, "message": "Bot non démarré"}), 400
+    if not getattr(bot_instance, "engine", None):
+        return jsonify({"success": False, "message": "Engine pas prêt"}), 400
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     token = data.get("token_address")
     sol_amount = data.get("sol_amount")
 
@@ -171,24 +192,17 @@ def buy():
         return await bot_instance.engine.buy_token_real(token, sol_amount, source="api")
 
     loop = asyncio.new_event_loop()
-    success, result = loop.run_until_complete(do_buy())
+    ok, result = loop.run_until_complete(do_buy())
     loop.close()
 
-    return jsonify({
-        "success": success,
-        "result": result
-    })
+    return jsonify({"success": ok, "result": result})
+
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "status": "healthy",
-        "time": time.time()
-    })
+    return jsonify({"status": "healthy", "timestamp": time.time()}), 200
 
-# ============================================================
-# DÉMARRAGE RENDER
-# ============================================================
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Web server démarré sur le port {port}")
