@@ -250,56 +250,48 @@ def toggle_auto():
 
 @app.route("/scan", methods=["GET"])
 def scan_route():
-    """
-    /scan -> tokens filtrés (ce qui passe)
-    /scan?debug=1 -> renvoie aussi une liste de rejets avec raisons (top 20)
-    /scan?raw=1 -> renvoie les 50 premières paires brutes DexScreener (diagnostic)
-    """
     if not bot_instance or not getattr(bot_instance, "running", False):
         return jsonify({"success": False, "message": "Bot non démarré"}), 400
+    if not getattr(bot_instance, "engine", None):
+        return jsonify({"success": False, "message": "Engine pas prêt"}), 400
 
-    engine = getattr(bot_instance, "engine", None)
-    if not engine:
-        return jsonify({"success": False, "message": "Engine non prêt"}), 400
-
-    debug = request.args.get("debug", "0") == "1"
     raw = request.args.get("raw", "0") == "1"
+    debug = request.args.get("debug", "0") == "1"
 
-    # Si raw: on appelle directement l'API DexScreener via la méthode interne si dispo
+    # --- RAW MODE: renvoie des paires brutes DexScreener
     if raw:
         try:
-            # engine.scan_dexscreener() renvoie déjà filtré.
-            # donc on fait un "raw fetch" minimal ici pour debug
             import aiohttp
-
             async def fetch_raw():
                 url = "https://api.dexscreener.com/latest/dex/pairs/solana"
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=15) as resp:
                         data = await resp.json()
                         pairs = data.get("pairs", [])[:50]
-                        return pairs
+                        return {"pairs_count": len(pairs), "pairs": pairs}
 
-            pairs = run_async(fetch_raw(), timeout=20.0)
-            return jsonify({"success": True, "pairs_count": len(pairs), "pairs": pairs})
+            loop = asyncio.new_event_loop()
+            out = loop.run_until_complete(fetch_raw())
+            loop.close()
+            return jsonify({"success": True, **out})
 
         except Exception as e:
-            return jsonify({"success": False, "message": f"raw scan error: {str(e)[:180]}"}), 500
+            return jsonify({"success": False, "message": f"raw error: {str(e)[:180]}"}), 500
 
-    # Sinon scan filtré normal
+    # --- NORMAL MODE: scan filtré
     try:
-        tokens = run_async(engine.scan_dexscreener(), timeout=30.0) or []
+        loop = asyncio.new_event_loop()
+        tokens = loop.run_until_complete(bot_instance.engine.scan_dexscreener())
+        loop.close()
     except Exception as e:
-        logger.exception("scan error")
         return jsonify({"success": False, "message": f"scan error: {str(e)[:180]}"}), 500
 
     resp = {"success": True, "tokens_found": len(tokens), "tokens": tokens[:10]}
 
-    # Debug: montrer pourquoi ça rejette
-    if debug:
+    # --- DEBUG MODE: donne les raisons de rejet (si ta méthode existe)
+    if debug and hasattr(bot_instance.engine, "check_token_criteria"):
         try:
             import aiohttp
-
             async def debug_rejects():
                 url = "https://api.dexscreener.com/latest/dex/pairs/solana"
                 async with aiohttp.ClientSession() as session:
@@ -313,21 +305,20 @@ def scan_route():
                     sym = (p.get("baseToken") or {}).get("symbol", "UNK")
                     if not addr:
                         continue
-                    ok, reason = await engine.check_token_criteria(addr)
+                    ok, reason = await bot_instance.engine.check_token_criteria(addr)
                     if not ok:
                         rejects.append({"symbol": sym, "address": addr, "reason": reason})
                     if len(rejects) >= 20:
                         break
                 return rejects
 
-            rejects = run_async(debug_rejects(), timeout=30.0)
-            resp["debug_rejects"] = rejects
-
+            loop = asyncio.new_event_loop()
+            resp["debug_rejects"] = loop.run_until_complete(debug_rejects())
+            loop.close()
         except Exception as e:
             resp["debug_error"] = str(e)[:180]
 
     return jsonify(resp)
-
 
 # =========================================
 # Render entry (Gunicorn)
