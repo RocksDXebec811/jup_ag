@@ -4,3 +4,4 @@ requests
 asyncio
 aiohttp
 python-dotenv
+base58
