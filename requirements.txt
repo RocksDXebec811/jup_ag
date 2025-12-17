@@ -7,5 +7,5 @@ python-dotenv
 base58
 solana
 solders
-spl-token
+
 
