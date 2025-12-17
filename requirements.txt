@@ -5,3 +5,7 @@ asyncio
 aiohttp
 python-dotenv
 base58
+solana
+solders
+spl-token
+
