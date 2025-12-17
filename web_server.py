@@ -246,21 +246,22 @@ def status_route():
 
 
 @app.route("/toggle-auto", methods=["GET", "POST"])
-def toggle_auto():
-    if not bot_instance or not getattr(bot_instance, "running", False):
-        return jsonify({"success": False, "error": "Bot non démarré"}), 400
-    if not getattr(bot_instance, "engine", None):
-        return jsonify({"success": False, "error": "Engine non disponible"}), 400
+def toggle_auto_trading():
+    if not bot_instance:
+        return jsonify({"error": "Bot non démarré"}), 400
 
     try:
-        bot_instance.engine.auto_trading = not bool(bot_instance.engine.auto_trading)
-        return jsonify({
-            "success": True,
-            "auto_trading": bool(bot_instance.engine.auto_trading),
-            "message": f"Auto-trading {'activé' if bot_instance.engine.auto_trading else 'désactivé'}"
-        })
+        if hasattr(bot_instance, 'engine'):
+            bot_instance.engine.auto_trading = not bot_instance.engine.auto_trading
+            return jsonify({
+                "success": True,
+                "auto_trading": bot_instance.engine.auto_trading,
+                "message": f"Auto-trading {'activé' if bot_instance.engine.auto_trading else 'désactivé'}"
+            })
+        return jsonify({"success": False, "message": "Engine non disponible"}), 400
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)[:200]}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 
 @app.route("/scan", methods=["GET"])
