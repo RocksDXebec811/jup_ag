@@ -180,18 +180,54 @@ def health():
     
 @app.route('/scan')
 def scan():
-    # Vérifie si le bot est démarré
-    if not bot_running:  # ou une variable similaire
-        return jsonify({"success": False, "message": "Bot non démarré"})
+    """Endpoint de scan - version temporaire pour tester"""
+    import urllib.request
+    import json
     
-    # Récupère les tokens
-    tokens = []  # ICI ton code de scan
+    # Vérifie si le bot est démarré (adapté à ton code)
+    # if not bot_running:
+    #     return jsonify({"success": False, "message": "Bot non démarré"})
     
-    return jsonify({
-        "success": True,
-        "tokens": tokens,
-        "tokens_found": len(tokens)
-    })
+    try:
+        # Utilise Jupiter API pour le test
+        url = "https://api.jup.ag/tokens/v3"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            all_tokens = data.get('data', [])
+            
+            # Convertir au format de ton bot
+            tokens = []
+            for token in all_tokens[:10]:  # Prendre 10 tokens
+                tokens.append({
+                    'address': token.get('address'),
+                    'symbol': token.get('symbol'),
+                    'name': token.get('name'),
+                    'decimals': token.get('decimals'),
+                    # Ajouter des valeurs pour passer tes filtres
+                    'liquidity': 100000,  # Faux, mais pour voir
+                    'volume_24h': 50000,
+                    'market_cap': 1000000,
+                    'age_minutes': 30
+                })
+            
+            return jsonify({
+                "success": True,
+                "tokens": tokens,
+                "tokens_found": len(tokens),
+                "debug": {
+                    "source": "Jupiter API (test mode)",
+                    "warning": "This is temporary - fix your real scanner"
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
 
 
 @app.route('/debug_fetch')
