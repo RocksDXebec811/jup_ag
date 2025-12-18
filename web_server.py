@@ -178,7 +178,64 @@ def home():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
-
+@app.route('/debug_fetch', methods=['GET'])
+def debug_fetch():
+    """
+    Test endpoint pour vérifier si la source de données fonctionne
+    """
+    try:
+        # Test simple DexScreener
+        print("[DEBUG] Starting debug_fetch...", flush=True)
+        
+        # Version 1: DexScreener (le plus simple)
+        url = "https://api.dexscreener.com/latest/dex/pairs/solana?limit=5"
+        
+        print(f"[DEBUG] Calling {url}", flush=True)
+        start = time.time()
+        
+        response = requests.get(url, timeout=10)
+        elapsed = time.time() - start
+        
+        print(f"[DEBUG] HTTP {response.status_code} in {elapsed:.2f}s", flush=True)
+        
+        if response.status_code == 200:
+            data = response.json()
+            pairs = data.get('pairs', [])
+            
+            # Log les résultats
+            print(f"[DEBUG] Found {len(pairs)} pairs", flush=True)
+            
+            # Format simple pour la réponse
+            sample = []
+            for pair in pairs[:3]:
+                sample.append({
+                    'symbol': pair.get('baseToken', {}).get('symbol', 'N/A'),
+                    'liquidity_usd': pair.get('liquidity', {}).get('usd', 0),
+                    'price': pair.get('priceUsd', 0),
+                    'created': pair.get('pairCreatedAt', 0)
+                })
+            
+            return jsonify({
+                'success': True,
+                'source': 'DexScreener',
+                'status': response.status_code,
+                'fetch_time_ms': round(elapsed * 1000, 2),
+                'total_pairs': len(pairs),
+                'sample': sample
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'source': 'DexScreener',
+                'status': response.status_code,
+                'error': response.text[:200] if response.text else 'No response text'
+            })
+            
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'error': 'Timeout (10s) - API inaccessible'})
+    except Exception as e:
+        print(f"[DEBUG ERROR] {str(e)}", flush=True)
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
