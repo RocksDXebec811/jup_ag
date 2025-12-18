@@ -1132,6 +1132,65 @@ def fetch_pairs():
     data = r.json()
     pairs = data.get("pairs", []) or []
     return pairs
+@app.route('/debug_fetch', methods=['GET'])
+def debug_fetch():
+    """
+    Test direct de la source de données sans aucun filtre
+    """
+    try:
+        # Version 1: Test DexScreener (ta source probable)
+        url = "https://api.dexscreener.com/latest/dex/pairs/solana?limit=100"
+        
+        print(f"DEBUG: Fetching {url}", flush=True)
+        start = time.time()
+        
+        response = requests.get(
+            url,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        fetch_time = time.time() - start
+        print(f"DEBUG: HTTP {response.status_code} in {fetch_time:.2f}s", flush=True)
+        
+        if response.status_code != 200:
+            return jsonify({
+                "success": False,
+                "error": f"HTTP {response.status_code}",
+                "response_sample": response.text[:200] if response.text else "Empty"
+            })
+        
+        # Parse response
+        data = response.json()
+        pairs = data.get("pairs", [])
+        
+        # Affiche les 3 premières paires pour voir la structure
+        sample_pairs = []
+        for i, pair in enumerate(pairs[:3]):
+            sample_pairs.append({
+                "index": i,
+                "baseToken": pair.get("baseToken", {}).get("symbol", "?"),
+                "quoteToken": pair.get("quoteToken", {}).get("symbol", "?"),
+                "priceUsd": pair.get("priceUsd", "?"),
+                "liquidity": pair.get("liquidity", {}).get("usd", 0),
+                "volume24h": pair.get("volume", {}).get("h24", 0),
+                "pairCreatedAt": pair.get("pairCreatedAt", 0)
+            })
+        
+        return jsonify({
+            "success": True,
+            "http_status": response.status_code,
+            "fetch_time_seconds": round(fetch_time, 2),
+            "total_pairs_found": len(pairs),
+            "sample_pairs": sample_pairs,
+            "first_pair_full": pairs[0] if pairs else None
+        })
+        
+    except requests.exceptions.Timeout:
+        return jsonify({"success": False, "error": "Timeout (15s) - Render bloque l'API"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 
 @app.get("/scan")
 def scan():
