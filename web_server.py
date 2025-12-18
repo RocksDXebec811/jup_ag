@@ -174,10 +174,26 @@ def home():
         ]
     })
 
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
+    
+@app.route('/scan')
+def scan():
+    # Vérifie si le bot est démarré
+    if not bot_running:  # ou une variable similaire
+        return jsonify({"success": False, "message": "Bot non démarré"})
+    
+    # Récupère les tokens
+    tokens = []  # ICI ton code de scan
+    
+    return jsonify({
+        "success": True,
+        "tokens": tokens,
+        "tokens_found": len(tokens)
+    })
+
+
 @app.route('/debug_fetch')
 def debug_fetch():
     """Test endpoint - version qui MARCHE sans dépendances"""
