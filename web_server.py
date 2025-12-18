@@ -272,7 +272,7 @@ def scan():
         print(f"[SCAN] Starting scan at {time.time()}", flush=True)
         
         # Option 1: Utiliser l'endpoint "new"
-        url = "# REMPLACE l'URL actuelle (qui cause 404) par :
+        
         url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=50""
         
         req = urllib.request.Request(
