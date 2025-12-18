@@ -178,78 +178,66 @@ def home():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
-@app.route('/debug_fetch', methods=['GET'])
+@app.route('/debug_fetch')
 def debug_fetch():
-    """
-    Test endpoint pour vérifier si la source de données fonctionne
-    """
+    """Test endpoint - version qui MARCHE sans dépendances"""
+    import urllib.request
+    import json
+    import time
+    
     try:
         print("[DEBUG] Starting debug_fetch...", flush=True)
         
-        # SOURCE ALTERNATIVE 1: Jupiter (très fiable)
+        # Test avec Jupiter API (fonctionne toujours)
         url = "https://api.jup.ag/tokens/v3"
         
-        print(f"[DEBUG] Calling Jupiter API: {url}", flush=True)
+        print(f"[DEBUG] Calling {url}", flush=True)
         start = time.time()
         
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        elapsed = time.time() - start
+        # Créer la requête
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json"
+            }
+        )
         
-        print(f"[DEBUG] HTTP {response.status_code} in {elapsed:.2f}s", flush=True)
-        
-        if response.status_code == 200:
-            data = response.json()
+        # Exécuter
+        with urllib.request.urlopen(req, timeout=15) as response:
+            elapsed = time.time() - start
+            data = response.read()
             
-            # Jupiter retourne une liste de tokens
-            tokens = data.get('data', [])
+            # Parse JSON
+            tokens = json.loads(data.decode('utf-8')).get('data', [])
             
-            print(f"[DEBUG] Found {len(tokens)} tokens from Jupiter", flush=True)
+            print(f"[DEBUG] HTTP {response.status} in {elapsed:.2f}s - Found {len(tokens)} tokens", flush=True)
             
-            # Format de réponse
+            # Retourne un échantillon
             sample = []
             for token in tokens[:5]:
                 sample.append({
                     'symbol': token.get('symbol', 'N/A'),
                     'name': token.get('name', 'N/A'),
-                    'address': token.get('address', 'N/A'),
-                    'decimals': token.get('decimals', 0)
+                    'address': token.get('address', 'N/A')[:15] + '...'
                 })
             
             return jsonify({
                 'success': True,
                 'source': 'Jupiter API',
-                'status': response.status_code,
-                'fetch_time_ms': round(elapsed * 1000, 2),
+                'status': response.status,
                 'total_tokens': len(tokens),
-                'sample': sample
-            })
-        else:
-            # Essayer une autre source
-            print("[DEBUG] Trying alternative source...", flush=True)
-            
-            # SOURCE ALTERNATIVE 2: Birdeye (si tu as une API key)
-            # OU SOURCE 3: Helius
-            # Pour l'instant, retourner l'erreur
-            return jsonify({
-                'success': False,
-                'source': 'Jupiter API',
-                'status': response.status_code,
-                'error': 'Failed to fetch data',
-                'response_preview': response.text[:200] if response.text else 'No response'
+                'sample': sample,
+                'hint': 'API works! Now fix your /scan function'
             })
             
     except Exception as e:
         print(f"[DEBUG ERROR] {str(e)}", flush=True)
         return jsonify({
-            'success': False, 
+            'success': False,
             'error': str(e),
-            'hint': 'Check if requests module is installed: pip install requests'
+            'hint': 'Check your internet connection or API endpoint'
         })
-
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
     if not BOT_AVAILABLE:
