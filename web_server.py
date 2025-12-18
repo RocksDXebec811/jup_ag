@@ -177,6 +177,63 @@ def home():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
+
+@app.route('/scan_raydium')
+def scan_raydium():
+    """Scanner spécifique pour nouveaux tokens Raydium"""
+    try:
+        # Récupérer les paires Raydium récentes
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            all_pairs = data.get("pairs", [])
+            
+            # Filtrer pour les NOUVELLES paires (moins de 10 minutes)
+            current_time = time.time()
+            new_pairs = []
+            
+            for pair in all_pairs:
+                created_at = pair.get('pairCreatedAt', 0)
+                if created_at:
+                    age_seconds = current_time - (created_at / 1000)
+                    age_minutes = age_seconds / 60
+                    
+                    # Critères pour nouveaux tokens Raydium
+                    liquidity = pair.get('liquidity', {}).get('usd', 0)
+                    
+                    # Prendre les tokens de moins de 10 minutes avec liquidité > 5k
+                    if age_minutes < 10 and liquidity > 5000:
+                        new_pairs.append({
+                            'address': pair.get('baseToken', {}).get('address', ''),
+                            'symbol': pair.get('baseToken', {}).get('symbol', ''),
+                            'name': pair.get('baseToken', {}).get('name', ''),
+                            'liquidity': liquidity,
+                            'price': pair.get('priceUsd', 0),
+                            'volume_24h': pair.get('volume', {}).get('h24', 0),
+                            'age_minutes': round(age_minutes, 2),
+                            'pair_address': pair.get('pairAddress', ''),
+                            'url': pair.get('url', '')
+                        })
+            
+            return jsonify({
+                'success': True,
+                'tokens': new_pairs,
+                'tokens_found': len(new_pairs),
+                'debug': {
+                    'source': 'Raydium new pairs (<10min)',
+                    'total_scanned': len(all_pairs),
+                    'filters': 'age<10min, liquidity>5k'
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
     
 @app.route('/scan')
 def scan():
@@ -224,126 +281,69 @@ def scan():
         }), 500
 @app.route('/debug_fetch')
 def debug_fetch():
-    """Test endpoint - version corrigée avec sources alternatives"""
+    """Scan spécifique Raydium"""
     import urllib.request
     import json
     import time
     
-    # Liste des sources à tester
-    sources = [
-        {
-            "name": "Helius API (newest tokens)",
-            "url": "https://api.helius.xyz/v0/token-metadata?api-key=DEMO_KEY",
-            "headers": {"User-Agent": "Mozilla/5.0"},
-            "enabled": False  # Mettre True si tu as une clé
-        },
-        {
-            "name": "DexScreener (popular pairs)",
-            "url": "https://api.dexscreener.com/latest/dex/pairs/solana?limit=20",
-            "headers": {
+    try:
+        print("[DEBUG] Scanning Raydium pairs...", flush=True)
+        
+        # OPTION 1: Raydium via DexScreener (spécifique Raydium)
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=50"
+        
+        # OPTION 2: Raydium pairs récents (si l'option 1 ne marche pas)
+        # url = "https://api.dexscreener.com/latest/dex/pairs/solana?dex=raydium&limit=50"
+        
+        print(f"[DEBUG] Calling: {url}", flush=True)
+        start = time.time()
+        
+        req = urllib.request.Request(
+            url,
+            headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json"
-            },
-            "enabled": True
-        },
-        {
-            "name": "Birdeye (trending)",
-            "url": "https://public-api.birdeye.so/defi/v3/tokenlist?sort_by=v24hUSD&sort_type=desc",
-            "headers": {
-                "User-Agent": "Mozilla/5.0",
-                "X-API-KEY": ""  # À remplir si tu as une clé
-            },
-            "enabled": False
-        },
-        {
-            "name": "Pump.fun (new tokens)",
-            "url": "https://frontend-api.pump.fun/coins",
-            "headers": {"User-Agent": "Mozilla/5.0"},
-            "enabled": True
-        }
-    ]
-    
-    for source in sources:
-        if not source["enabled"]:
-            continue
+                "Accept": "application/json",
+                "Referer": "https://dexscreener.com/"
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=20) as response:
+            elapsed = time.time() - start
+            data = json.loads(response.read().decode('utf-8'))
             
-        try:
-            print(f"[DEBUG] Testing source: {source['name']}", flush=True)
-            start = time.time()
+            pairs = data.get("pairs", [])
             
-            req = urllib.request.Request(
-                source["url"],
-                headers=source["headers"]
-            )
+            print(f"[DEBUG] Found {len(pairs)} Raydium pairs", flush=True)
             
-            with urllib.request.urlopen(req, timeout=15) as response:
-                elapsed = time.time() - start
-                data = response.read().decode('utf-8')
-                
-                print(f"[DEBUG] {source['name']}: HTTP {response.status} in {elapsed:.2f}s", flush=True)
-                
-                # Essayer de parser JSON
-                try:
-                    json_data = json.loads(data)
-                    
-                    # Analyse basique selon la source
-                    if source["name"] == "DexScreener":
-                        pairs = json_data.get("pairs", [])
-                        sample = []
-                        for pair in pairs[:5]:
-                            sample.append({
-                                "symbol": pair.get("baseToken", {}).get("symbol", "?"),
-                                "liquidity": pair.get("liquidity", {}).get("usd", 0),
-                                "price": pair.get("priceUsd", 0),
-                                "created": pair.get("pairCreatedAt", 0)
-                            })
-                        return jsonify({
-                            "success": True,
-                            "source": source["name"],
-                            "status": response.status,
-                            "total_items": len(pairs),
-                            "sample": sample
-                        })
-                        
-                    elif source["name"] == "Pump.fun":
-                        # Pump.fun retourne une liste de coins
-                        coins = json_data if isinstance(json_data, list) else []
-                        sample = []
-                        for coin in coins[:5]:
-                            sample.append({
-                                "symbol": coin.get("symbol", "?"),
-                                "mint": coin.get("mint", "?")[:15] + "...",
-                                "price": coin.get("price", 0),
-                                "created": coin.get("createdAt", 0)
-                            })
-                        return jsonify({
-                            "success": True,
-                            "source": source["name"],
-                            "status": response.status,
-                            "total_items": len(coins),
-                            "sample": sample
-                        })
-                        
-                except json.JSONDecodeError:
-                    return jsonify({
-                        "success": True,
-                        "source": source["name"],
-                        "status": response.status,
-                        "raw_preview": data[:200],
-                        "note": "Response is not JSON"
-                    })
-                    
-        except Exception as e:
-            print(f"[DEBUG] Source {source['name']} failed: {str(e)}", flush=True)
-            continue
-    
-    # Si toutes les sources échouent
-    return jsonify({
-        "success": False,
-        "error": "All sources failed",
-        "hint": "Try enabling Helius or Birdeye with API keys",
-        "config_check": "Do you have HELIUS_API_KEY or BIRDEYE_API_KEY in env?"
-    })
+            # Affiche les paires avec leurs stats
+            sample = []
+            for pair in pairs[:10]:  # 10 premières
+                sample.append({
+                    'symbol': pair.get('baseToken', {}).get('symbol', '?'),
+                    'pairAddress': pair.get('pairAddress', '?')[:15] + '...',
+                    'liquidity_usd': pair.get('liquidity', {}).get('usd', 0),
+                    'price': pair.get('priceUsd', 0),
+                    'volume_24h': pair.get('volume', {}).get('h24', 0),
+                    'age_seconds': int(time.time() - (pair.get('pairCreatedAt', 0) / 1000)) if pair.get('pairCreatedAt') else 0,
+                    'dex': pair.get('dexId', '?')
+                })
+            
+            return jsonify({
+                'success': True,
+                'source': 'Raydium via DexScreener',
+                'status': response.status,
+                'total_pairs': len(pairs),
+                'sample': sample,
+                'hint': 'These are Raydium pairs. Adjust filters for new tokens.'
+            })
+            
+    except Exception as e:
+        print(f"[DEBUG ERROR] {str(e)}", flush=True)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'hint': 'Raydium scan failed. Try getting Helius API key.'
+        })
 
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
