@@ -230,18 +230,18 @@ def debug_fetch():
             'hint': 'Raydium scan failed.'
         })
 
-@app.route('/debug_fetch_pump')
-def debug_fetch_pump():
-    """Scanner les NOUVEAUX tokens Pump.fun (moins de 10 minutes)"""
+@app.route('/debug_fetch_new')
+def debug_fetch_new():
+    """Scanner les NOUVELLES paires Raydium (moins de 60 minutes)"""
     import urllib.request
     import json as json_module
     import time
     
     try:
-        print("[DEBUG] Scanning Pump.fun new coins...", flush=True)
+        print("[DEBUG] Scanning NEW Raydium pairs...", flush=True)
         
-        # Pump.fun API pour nouveaux tokens
-        url = "https://frontend-api.pump.fun/coins"
+        # Même endpoint que /debug_fetch mais avec filtre temporel
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
         
         print(f"[DEBUG] Calling: {url}", flush=True)
         start = time.time()
@@ -249,51 +249,62 @@ def debug_fetch_pump():
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Referer": "https://dexscreener.com/"
             }
         )
         
         with urllib.request.urlopen(req, timeout=20) as response:
             elapsed = time.time() - start
             data = json_module.loads(response.read().decode('utf-8'))
+            pairs = data.get("pairs", [])
             
-            # Les coins sont déjà triés par date (les plus récents en premier)
-            coins = data if isinstance(data, list) else []
-            
-            print(f"[DEBUG] Found {len(coins)} Pump.fun coins", flush=True)
+            print(f"[DEBUG] Found {len(pairs)} Raydium pairs total", flush=True)
             
             current_time = time.time()
-            recent_coins = []
+            new_pairs = []
             
-            for coin in coins[:20]:  # 20 premiers
-                created_at = coin.get('createdAt', 0)
-                if created_at:
-                    age_seconds = current_time - (created_at / 1000)
-                    age_minutes = age_seconds / 60
+            for pair in pairs:
+                created_at = pair.get('pairCreatedAt', 0)
+                if not created_at:
+                    continue
                     
-                    # Prendre seulement les tokens de moins de 10 minutes
-                    if age_minutes < 10:
-                        recent_coins.append({
-                            'symbol': coin.get('symbol', '?'),
-                            'name': coin.get('name', '?'),
-                            'mint': coin.get('mint', '?')[:15] + '...',
-                            'price_sol': coin.get('price', 0),
-                            'liquidity': coin.get('liquidity', 0),
-                            'age_seconds': int(age_seconds),
-                            'age_minutes': round(age_minutes, 2),
-                            'holders': coin.get('holders', 0),
-                            'market_cap': coin.get('marketCap', 0)
-                        })
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                # Filtrer pour paires de moins de 60 minutes
+                if age_minutes <= 60:
+                    new_pairs.append(pair)
+            
+            print(f"[DEBUG] Found {len(new_pairs)} Raydium pairs <60min", flush=True)
+            
+            # Affiche les paires récentes
+            sample = []
+            for pair in new_pairs[:10]:
+                created_at = pair.get('pairCreatedAt', 0)
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                sample.append({
+                    'symbol': pair.get('baseToken', {}).get('symbol', '?'),
+                    'pairAddress': pair.get('pairAddress', '?')[:15] + '...',
+                    'liquidity_usd': pair.get('liquidity', {}).get('usd', 0),
+                    'price': pair.get('priceUsd', 0),
+                    'volume_24h': pair.get('volume', {}).get('h24', 0),
+                    'age_seconds': int(age_seconds),
+                    'age_minutes': round(age_minutes, 2),
+                    'dex': pair.get('dexId', '?')
+                })
             
             return jsonify({
                 'success': True,
-                'source': 'Pump.fun (new coins <10min)',
+                'source': 'Raydium pairs <60min',
                 'status': response.status,
-                'total_coins': len(coins),
-                'recent_coins': len(recent_coins),
-                'coins': recent_coins[:10],
-                'hint': 'These are NEW Pump.fun coins (<10min). Use for immediate trading.'
+                'total_pairs': len(pairs),
+                'new_pairs': len(new_pairs),
+                'sample': sample,
+                'hint': 'These are Raydium pairs less than 60 minutes old.'
             })
             
     except Exception as e:
@@ -301,7 +312,7 @@ def debug_fetch_pump():
         return jsonify({
             'success': False,
             'error': str(e),
-            'hint': 'Try using DexScreener new pairs instead'
+            'hint': 'Failed to scan new pairs. The API endpoint may have changed.'
         })
 
 @app.route('/test_scan_simple')
@@ -475,8 +486,10 @@ def scan_direct():
     import time
     
     try:
-        # Utilise l'endpoint "new" pour paires récentes
-        url = "https://api.dexscreener.com/latest/dex/pairs/new"
+        print("[SCAN DIRECT] Starting direct scan...", flush=True)
+        
+        # Utilise l'endpoint de recherche Raydium
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
         
         req = urllib.request.Request(
             url,
@@ -487,13 +500,17 @@ def scan_direct():
             data = json_module.loads(response.read().decode('utf-8'))
             all_pairs = data.get("pairs", [])
             
-            # Filtrer pour Raydium seulement
-            raydium_pairs = [p for p in all_pairs if p.get('dexId') == 'raydium']
+            print(f"[SCAN DIRECT] Got {len(all_pairs)} total pairs", flush=True)
             
             current_time = time.time()
             filtered_tokens = []
             
-            for pair in raydium_pairs:
+            for pair in all_pairs:
+                # Vérifie que c'est Raydium
+                if pair.get('dexId') != 'raydium':
+                    continue
+                
+                # Calcule l'âge
                 created_at = pair.get('pairCreatedAt', 0)
                 if not created_at:
                     continue
@@ -501,14 +518,15 @@ def scan_direct():
                 age_seconds = current_time - (created_at / 1000)
                 age_minutes = age_seconds / 60
                 
+                # Récupère les stats
                 liquidity = pair.get('liquidity', {}).get('usd', 0)
                 volume_24h = pair.get('volume', {}).get('h24', 0)
                 price = pair.get('priceUsd', 0)
                 
-                # FILTRES PLUS LARGES pour voir des résultats
-                if (age_minutes >= 1 and age_minutes <= 60 and  # 1-60 minutes
-                    liquidity >= 1000 and                       # Liquidity > 1k (au lieu de 50k)
-                    volume_24h >= 1000):                        # Volume > 1k (au lieu de 100k)
+                # **FILTRES RÉALISTES** pour nouveaux tokens Raydium
+                if (age_minutes >= 1 and age_minutes <= 60 and    # 1-60 minutes
+                    liquidity >= 5000 and                         # Liquidity > 5k (pas 50k)
+                    volume_24h >= 1000):                          # Volume > 1k (pas 100k)
                     
                     base_token = pair.get('baseToken', {})
                     
@@ -524,19 +542,26 @@ def scan_direct():
                         'url': pair.get('url', '')
                     })
             
+            print(f"[SCAN DIRECT] Found {len(filtered_tokens)} matching tokens", flush=True)
+            
             return jsonify({
                 "success": True,
                 "tokens": filtered_tokens[:20],
                 "tokens_found": len(filtered_tokens),
                 "debug": {
-                    "source": "DexScreener new pairs (direct)",
+                    "source": "DexScreener Raydium search",
                     "total_pairs": len(all_pairs),
-                    "raydium_pairs": len(raydium_pairs),
-                    "filters": "age: 1-60min, liquidity: >1k, volume: >1k"
+                    "filters": {
+                        "age_min": 1,
+                        "age_max": 60,
+                        "min_liquidity": 5000,
+                        "min_volume": 1000
+                    }
                 }
             })
             
     except Exception as e:
+        print(f"[SCAN DIRECT ERROR] {str(e)}", flush=True)
         return jsonify({
             "success": False,
             "error": str(e),
