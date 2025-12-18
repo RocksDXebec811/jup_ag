@@ -272,7 +272,8 @@ def scan():
         print(f"[SCAN] Starting scan at {time.time()}", flush=True)
         
         # Option 1: Utiliser l'endpoint "new"
-        url = "https://api.dexscreener.com/latest/dex/pairs/new"
+        url = "# REMPLACE l'URL actuelle (qui cause 404) par :
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=50""
         
         req = urllib.request.Request(
             url,
@@ -356,7 +357,51 @@ def scan():
             "error": str(e),
             "tokens_found": 0
         })
+
+@app.route('/test_scan_simple')
+def test_scan_simple():
+    """Version simple du scan pour debug"""
+    import urllib.request
+    import json
+    import time
+    
+    try:
+        # URL qui MARCHE (la même que /debug_fetch)
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=50"
         
+        print(f"[TEST SCAN] Calling {url}", flush=True)
+        start = time.time()
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            elapsed = time.time() - start
+            data = json.loads(response.read().decode('utf-8'))
+            
+            pairs = data.get("pairs", [])
+            print(f"[TEST SCAN] Got {len(pairs)} pairs in {elapsed:.2f}s", flush=True)
+            
+            # Simplement retourner le nombre de paires
+            return jsonify({
+                "success": True,
+                "status": response.status,
+                "pairs_found": len(pairs),
+                "first_pair_symbol": pairs[0].get("baseToken", {}).get("symbol", "none") if pairs else "none",
+                "fetch_time": f"{elapsed:.2f}s"
+            })
+            
+    except Exception as e:
+        print(f"[TEST SCAN ERROR] {str(e)}", flush=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        })
+
+
+
 @app.route('/debug_fetch')
 def debug_fetch():
     """Scan spécifique Raydium"""
