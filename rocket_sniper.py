@@ -433,19 +433,15 @@ class JupiterReal:
             logger.error(f"❌ Erreur swap_token_to_sol: {e}")
             return None, str(e)
 
-# ============================================================
-#          TRADING ENGINE RÉEL
-# ============================================================
 class RealTradingEngine:
-    def __init__(self, wallet: RealWallet, telegram: TelegramSimple):
+    def __init__(self, wallet, telegram):
         self.wallet = wallet
         self.telegram = telegram
-        self.jupiter = JupiterReal(wallet)
         self.active_trades: Dict[str, Dict] = {}
         self.auto_trading = Config.AUTO_BUY_ENABLED
         self.start_time = datetime.now()
         self.recent_tokens = set()
-        
+
         self.stats = {
             "total_buys": 0,
             "total_sells": 0,
@@ -457,7 +453,7 @@ class RealTradingEngine:
     async def get_token_info(self, token_address: str):
         """Obtenir les infos d'un token depuis DexScreener"""
         try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+            url = f"https://api.dexscreener.com/latest/dex/search?q={token_address}"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=5) as resp:
                     if resp.status == 200:
@@ -475,21 +471,21 @@ class RealTradingEngine:
             info = await self.get_token_info(token_address)
             if not info:
                 return False, "No DexScreener data"
-            
+
             created_at = info.get("pairCreatedAt") or info.get("createdAt")
             if created_at:
                 now_ms = int(time.time() * 1000)
                 age_min = (now_ms - int(created_at)) / 60000
-                
+
                 if age_min < Config.MIN_AGE_MINUTES:
                     return False, f"Too young ({age_min:.1f} min)"
                 if age_min > Config.MAX_AGE_MINUTES:
                     return False, f"Too old ({age_min:.1f} min)"
-            
+
             liquidity = float((info.get("liquidity") or {}).get("usd") or 0)
             if liquidity < Config.MIN_LIQUIDITY_USD:
                 return False, f"Low liquidity (${liquidity:,.0f})"
-            
+
             mcap = float(info.get("fdv") or info.get("marketCap") or 0)
             if mcap < Config.MIN_MARKET_CAP_USD:
                 return False, f"Low MCAP (${mcap:,.0f})"
@@ -497,26 +493,102 @@ class RealTradingEngine:
             volume = float((info.get("volume") or {}).get("h24") or 0)
             if volume < Config.MIN_VOLUME_24H_USD:
                 return False, f"Low volume (${volume:,.0f})"
-            
+
             if token_address in self.recent_tokens:
                 return False, "Recently processed"
-            
+
             return True, "All criteria passed"
         except Exception as e:
             return False, f"Error: {str(e)[:100]}"
+    
+    async def scan_dexscreener(self):
+        """
+        Scanner DexScreener pour identifier des tokens qui passent les critères.
+        """
+        try:
+            logger.info("@_Scan DexScreener en cours...")
+            url = "https://api.dexscreener.com/latest/dex/search?q=solana"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=15) as resp:
+                    text = await resp.text()
+                    if resp.status != 200:
+                        logger.error(f"X DexScreener status={resp.status} body={text[:150]}")
+                        return []
+
+                    ctype = resp.headers.get("Content-Type", "")
+                    if "text/html" in ctype:
+                        logger.error("X DexScreener a renvoyé du HTML, pas du JSON")
+                        return []
+
+                    data = json.loads(text)
+                    pairs = data.get("pairs", [])
+                    tokens_found = []
+
+                    for pair in pairs[:80]:
+                        try:
+                            base = pair.get("baseToken") or {}
+                            token_address = base.get("address")
+                            if not token_address:
+                                continue
+
+                            ok, reason = await self.check_token_criteria(token_address)
+                            if not ok:
+                                continue
+
+                            symbol = base.get("symbol", "UNKNOWN")
+                            price = pair.get("priceUsed", "N/A")
+                            liquidity = float((pair.get("liquidity") or {}).get("usd") or 0)
+                            volume = float((pair.get("volume") or {}).get("h24") or 0)
+                            mcap = float(pair.get("fdv") or pair.get("marketCap") or 0)
+                            created_at = int(pair.get("pairCreatedAt") or 0)
+                            age_min = (int(time.time() * 1000) - created_at) / 60000 if created_at else 0
+
+                            token_data = {
+                                "address": token_address,
+                                "symbol": symbol,
+                                "price": price,
+                                "liquidity": liquidity,
+                                "volume": volume,
+                                "mcap": mcap,
+                                "age_min": age_min,
+                                "pair_url": pair.get("url", ""),
+                            }
+
+                            tokens_found.append(token_data)
+
+                            if self.telegram:
+                                await self.telegram.send_message(
+                                    f"@ TOKEN FILTRÉ TROUVÉ\n\n"
+                                    f"@ {symbol} ({token_address[:16]}...)\n"
+                                    f"@Age: {age_min:.1f} min\n"
+                                    f"@ Liquidité: ${liquidity:.0f}\n"
+                                    f"@ MCAP: ${mcap:.0f}\n"
+                                    f"@ Volume: ${volume:.0f}\n"
+                                    f"@ Prix: ${price}\n\n"
+                                    f"Auto-trading: {'✓ ON' if self.auto_trading else '✗ OFF'}"
+                                )
+
+                        except Exception as e:
+                            logger.error(f"X Erreur traitement paire: {e}")
+                    
+                    return tokens_found
+
+        except Exception as e:
+            logger.error(f"X Erreur scan_dexscreener: {e}")
+            return []
     
     async def buy_token_real(self, token_address: str, sol_amount: float, source: str = "manual"):
         """Acheter un token réellement"""
         try:
             logger.info(f"🛒 ACHAT RÉEL: {sol_amount} SOL -> {token_address[:16]}...")
-            
+
             balance = await self.wallet.get_balance()
             if balance < sol_amount:
                 return False, f"Insufficient balance: {balance:.4f} SOL"
-            
+
             if token_address in self.active_trades:
                 return False, "Already in position"
-            
+
             if source == "auto":
                 ok, reason = await self.check_token_criteria(token_address)
                 if not ok:
@@ -525,24 +597,25 @@ class RealTradingEngine:
                         use_html=False
                     )
                     return False, reason
-            
+
             self.recent_tokens.add(token_address)
             if len(self.recent_tokens) > 100:
                 self.recent_tokens = set(list(self.recent_tokens)[-50:])
-            
+
+            # Note: Vous devez implémenter jupiter.swap_sol_to_token()
             tx_hash, message = await self.jupiter.swap_sol_to_token(token_address, sol_amount)
-            
+
             if not tx_hash:
                 return False, f"Swap failed: {message}"
-            
+
             token_info = await self.get_token_info(token_address)
             symbol = token_info.get('baseToken', {}).get('symbol', 'UNKNOWN') if token_info else 'UNKNOWN'
             price = float(token_info.get('priceUsd', 0) or 0) if token_info else 0.0
-            liquidity = float((token_info.get('liquidity') or {}).get('usd') or 0) if token_info else 0
-            
+            liquidity = float((token_info.get('liquidity') or {}).get('usd') or 0) if token_info else 0.0
+
             await asyncio.sleep(3)
             token_amount = await self.wallet.get_token_balance(token_address)
-            
+
             self.active_trades[token_address] = {
                 "symbol": symbol,
                 "buy_sol": sol_amount,
@@ -553,7 +626,7 @@ class RealTradingEngine:
                 "source": source,
                 "sell_targets": []
             }
-            
+
             self.stats["total_buys"] += 1
             self.stats["sol_spent"] += sol_amount
             
@@ -570,7 +643,7 @@ class RealTradingEngine:
 ⚠️ TRANSACTION RÉELLE EXÉCUTÉE!
 """
             await self.telegram.send_message(msg)
-            
+
             logger.info(f"✅ Achat réel enregistré: {symbol}")
             return True, tx_hash
         except Exception as e:
@@ -582,27 +655,27 @@ class RealTradingEngine:
         try:
             if token_address not in self.active_trades:
                 return False, "Token not owned"
-            
+
             trade = self.active_trades[token_address]
             logger.info(f"🎯 VENTE RÉELLE: {percent}% de {token_address[:16]}...")
-            
+
             token_balance = await self.wallet.get_token_balance(token_address)
             if token_balance <= 0:
                 return False, "No token balance"
-            
+
             sell_amount = token_balance * (percent / 100.0)
             tx_hash, message = await self.jupiter.swap_token_to_sol(token_address, sell_amount)
-            
+
             if not tx_hash:
                 return False, f"Sell failed: {message}"
-            
+
             token_info = await self.get_token_info(token_address)
             current_price = float(token_info.get('priceUsd', 0)) if token_info else 0
             buy_price = trade.get('buy_price', 0)
             
             profit_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
             profit_sol = (trade['buy_sol'] * (percent / 100) * profit_pct) / 100
-            
+
             trade["sell_targets"].append({
                 "percent": percent,
                 "time": datetime.now(),
@@ -611,14 +684,14 @@ class RealTradingEngine:
                 "profit_sol": profit_sol,
                 "reason": reason
             })
-            
+
             if percent >= 100:
                 del self.active_trades[token_address]
-            
+
             self.stats["total_sells"] += 1
             self.stats["sol_earned"] += trade['buy_sol'] * (percent / 100) + profit_sol
             self.stats["total_profit"] += profit_sol
-            
+
             msg = f"""
 ✅ VENTE RÉELLE RÉUSSIE!
 
@@ -631,7 +704,7 @@ class RealTradingEngine:
 🔗 TX: https://solscan.io/tx/{tx_hash}
 """
             await self.telegram.send_message(msg)
-            
+
             logger.info(f"✅ Vente réel enregistrée: {percent}% vendu")
             return True, tx_hash
         except Exception as e:
@@ -645,20 +718,20 @@ class RealTradingEngine:
                 token_info = await self.get_token_info(token_address)
                 if not token_info:
                     continue
-                
+
                 current_price = float(token_info.get('priceUsd', 0))
                 buy_price = trade.get('buy_price', 0)
-                
+
                 if buy_price <= 0 or current_price <= 0:
                     continue
-                
+
                 profit_pct = ((current_price - buy_price) / buy_price) * 100
-                
+
                 if profit_pct <= Config.STOP_LOSS_PCT:
                     logger.warning(f"⚠️ Stop-loss triggered: {profit_pct:.1f}%")
                     await self.sell_token_real(token_address, 100, "stop-loss")
                     continue
-                
+
                 for target in Config.PROFIT_TARGETS:
                     target_pct = (target["multiplier"] - 1) * 100
                     if profit_pct >= target_pct:
@@ -666,7 +739,7 @@ class RealTradingEngine:
                             sell.get("reason", "").startswith(f"take-profit {target['name']}")
                             for sell in trade.get("sell_targets", [])
                         )
-                        
+
                         if not already_sold:
                             logger.info(f"🎯 Take-profit {target['name']}: {profit_pct:.1f}%")
                             await self.sell_token_real(
@@ -677,71 +750,6 @@ class RealTradingEngine:
                             break
             except Exception as e:
                 logger.error(f"❌ Erreur check_profits: {e}")
-    
-    async def scan_dexscreener(self):
-        """Scanner DexScreener pour de nouveaux tokens"""
-        try:
-            logger.info("🔍 Scan DexScreener en cours...")
-            
-            url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    if resp.status != 200:
-                        return []
-                    data = await resp.json()
-            
-            pairs = data.get("pairs", [])
-            tokens_found = []
-            
-            for pair in pairs[:50]:
-                try:
-                    token_address = pair.get("baseToken", {}).get("address")
-                    if not token_address:
-                        continue
-                    
-                    ok, reason = await self.check_token_criteria(token_address)
-                    if not ok:
-                        continue
-                    
-                    symbol = pair.get("baseToken", {}).get("symbol", "UNKNOWN")
-                    price = pair.get("priceUsd", "N/A")
-                    liquidity = float((pair.get("liquidity") or {}).get("usd") or 0)
-                    volume = float((pair.get("volume") or {}).get("h24") or 0)
-                    mcap = float(pair.get("fdv") or 0)
-                    created_at = pair.get("pairCreatedAt", 0)
-                    
-                    age_min = (int(time.time() * 1000) - created_at) / 60000 if created_at else 0
-                    
-                    token_data = {
-                        "address": token_address,
-                        "symbol": symbol,
-                        "price": price,
-                        "liquidity": liquidity,
-                        "volume": volume,
-                        "mcap": mcap,
-                        "age_min": age_min,
-                        "pair_url": pair.get("url", "")
-                    }
-                    
-                    tokens_found.append(token_data)
-                    
-                    await self.telegram.send_message(
-                        f"🎯 TOKEN FILTRÉ TROUVÉ\n\n"
-                        f"💰 {symbol} ({token_address[:16]}...)\n"
-                        f"⏱️ Âge: {age_min:.1f} min\n"
-                        f"💧 Liquidité: ${liquidity:,.0f}\n"
-                        f"🏦 MCAP: ${mcap:,.0f}\n"
-                        f"📈 Volume: ${volume:,.0f}\n"
-                        f"💰 Prix: ${price}\n\n"
-                        f"Auto-trading: {'✅ ON' if self.auto_trading else '❌ OFF'}"
-                    )
-                except Exception as e:
-                    logger.error(f"❌ Erreur traitement paire: {e}")
-            
-            return tokens_found
-        except Exception as e:
-            logger.error(f"❌ Erreur scan_dexscreener: {e}")
-            return []
 
 # ============================================================
 #          BOT PRINCIPAL RÉEL
@@ -750,12 +758,12 @@ class RealSniperBot:
     def __init__(self):
         # IMPORTANT: Déplacez votre clé dans le fichier .env !
         self.private_key = os.getenv("WALLET_PRIVATE_KEY", "").strip()
-        
+
         if not self.private_key:
             print("❌ ERREUR: Aucune clé privée fournie")
             print("   Définissez WALLET_PRIVATE_KEY dans le fichier .env")
             sys.exit(1)
-        
+
         print(f"🚀 Initialisation du bot Solana...")
         print(f"   Clé: {self.private_key[:10]}...{self.private_key[-10:]}")
         
@@ -770,12 +778,12 @@ class RealSniperBot:
             print("\n" + "="*50)
             print("🚀 DÉMARRAGE DU SNIPER BOT SOLANA")
             print("="*50)
-            
+
             # Initialiser le portefeuille
             if not await self.wallet.initialize():
                 print("❌ Impossible d'initialiser le portefeuille")
                 return False
-            
+
             # Initialiser Telegram
             self.telegram = TelegramSimple()
             if not await self.telegram.start():
@@ -783,12 +791,12 @@ class RealSniperBot:
             
             # Créer le moteur de trading RÉEL
             self.engine = RealTradingEngine(self.wallet, self.telegram)
-            
+
             # Démarrer la boucle de trading RÉELLE
             await self.run()
-            
+
             return True
-            
+
         except KeyboardInterrupt:
             print("\n⏹ Arrêt demandé par l'utilisateur")
             return False
@@ -804,15 +812,15 @@ class RealSniperBot:
         """Boucle principale de trading RÉELLE"""
         if not self.engine:
             return
-        
+
         balance = await self.wallet.get_balance()
-        
+
         # Afficher les paliers de profit
         profit_lines = []
         for target in Config.PROFIT_TARGETS[:3]:
             profit_lines.append(f"• Take-profit: {target['multiplier']}x ({target['sell_percent']}%)")
         profit_text = "\n".join(profit_lines)
-        
+
         startup_msg = f"""
 🚀 ROCKET SNIPER - MODE RÉEL
 
@@ -834,24 +842,24 @@ Paliers de profit:
 {profit_text}
 """
         await self.telegram.send_message(startup_msg)
-        
+
         print("\n📱 Bot en marche! Vérifiez Telegram pour les alertes.")
         print("🔍 Scan automatique activé...")
-        
+
         last_scan = 0
         last_profit_check = 0
         last_status = time.time()
-        
+
         self.running = True
         
         try:
             while self.running:
                 current_time = time.time()
-                
+
                 # Scanner DexScreener
                 if current_time - last_scan >= Config.SCAN_INTERVAL:
                     tokens = await self.engine.scan_dexscreener()
-                    
+
                     # Achat automatique si activé
                     if self.engine.auto_trading and tokens:
                         for token in tokens:
@@ -862,20 +870,20 @@ Paliers de profit:
                             )
                             if success:
                                 break
-                    
+
                     last_scan = current_time
-                
+
                 # Vérifier les profits
                 if current_time - last_profit_check >= Config.CHECK_INTERVAL:
                     if self.engine.active_trades:
                         await self.engine.check_profits()
                     last_profit_check = current_time
-                
+
                 # Envoyer le statut périodique
                 if current_time - last_status >= Config.STATUS_INTERVAL:
                     balance = await self.wallet.get_balance()
                     uptime = datetime.now() - self.engine.start_time
-                    
+
                     status_msg = f"""
 📊 STATUT PÉRIODIQUE
 
@@ -890,9 +898,9 @@ Paliers de profit:
 """
                     await self.telegram.send_message(status_msg)
                     last_status = current_time
-                
+
                 await asyncio.sleep(1)
-                
+
         except KeyboardInterrupt:
             print("\n🛑 Arrêt demandé...")
         except Exception as e:
@@ -905,16 +913,15 @@ Paliers de profit:
         """Arrêter proprement"""
         self.running = False
         print("\n🛑 Arrêt du bot en cours...")
-        
+
         if self.telegram:
             await self.telegram.send_message("👋 Bot arrêté")
             await self.telegram.close()
-        
+
         if self.wallet:
             await self.wallet.close()
-        
-        print("✅ Bot arrêté proprement")
 
+        print("✅ Bot arrêté proprement")
 # ============================================================
 #          APPLICATION FLASK POUR RENDER
 # ============================================================
