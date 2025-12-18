@@ -184,58 +184,71 @@ def debug_fetch():
     Test endpoint pour vérifier si la source de données fonctionne
     """
     try:
-        # Test simple DexScreener
         print("[DEBUG] Starting debug_fetch...", flush=True)
         
-        # Version 1: DexScreener (le plus simple)
-        url = "https://api.dexscreener.com/latest/dex/pairs/solana?limit=5"
+        # SOURCE ALTERNATIVE 1: Jupiter (très fiable)
+        url = "https://api.jup.ag/tokens/v3"
         
-        print(f"[DEBUG] Calling {url}", flush=True)
+        print(f"[DEBUG] Calling Jupiter API: {url}", flush=True)
         start = time.time()
         
-        response = requests.get(url, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+        response = requests.get(url, headers=headers, timeout=15)
         elapsed = time.time() - start
         
         print(f"[DEBUG] HTTP {response.status_code} in {elapsed:.2f}s", flush=True)
         
         if response.status_code == 200:
             data = response.json()
-            pairs = data.get('pairs', [])
             
-            # Log les résultats
-            print(f"[DEBUG] Found {len(pairs)} pairs", flush=True)
+            # Jupiter retourne une liste de tokens
+            tokens = data.get('data', [])
             
-            # Format simple pour la réponse
+            print(f"[DEBUG] Found {len(tokens)} tokens from Jupiter", flush=True)
+            
+            # Format de réponse
             sample = []
-            for pair in pairs[:3]:
+            for token in tokens[:5]:
                 sample.append({
-                    'symbol': pair.get('baseToken', {}).get('symbol', 'N/A'),
-                    'liquidity_usd': pair.get('liquidity', {}).get('usd', 0),
-                    'price': pair.get('priceUsd', 0),
-                    'created': pair.get('pairCreatedAt', 0)
+                    'symbol': token.get('symbol', 'N/A'),
+                    'name': token.get('name', 'N/A'),
+                    'address': token.get('address', 'N/A'),
+                    'decimals': token.get('decimals', 0)
                 })
             
             return jsonify({
                 'success': True,
-                'source': 'DexScreener',
+                'source': 'Jupiter API',
                 'status': response.status_code,
                 'fetch_time_ms': round(elapsed * 1000, 2),
-                'total_pairs': len(pairs),
+                'total_tokens': len(tokens),
                 'sample': sample
             })
         else:
+            # Essayer une autre source
+            print("[DEBUG] Trying alternative source...", flush=True)
+            
+            # SOURCE ALTERNATIVE 2: Birdeye (si tu as une API key)
+            # OU SOURCE 3: Helius
+            # Pour l'instant, retourner l'erreur
             return jsonify({
                 'success': False,
-                'source': 'DexScreener',
+                'source': 'Jupiter API',
                 'status': response.status_code,
-                'error': response.text[:200] if response.text else 'No response text'
+                'error': 'Failed to fetch data',
+                'response_preview': response.text[:200] if response.text else 'No response'
             })
             
-    except requests.exceptions.Timeout:
-        return jsonify({'success': False, 'error': 'Timeout (10s) - API inaccessible'})
     except Exception as e:
         print(f"[DEBUG ERROR] {str(e)}", flush=True)
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({
+            'success': False, 
+            'error': str(e),
+            'hint': 'Check if requests module is installed: pip install requests'
+        })
 
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
