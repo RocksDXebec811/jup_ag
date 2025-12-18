@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-import sys
+import sys 
 import json
 import time
 import asyncio
@@ -1119,6 +1119,50 @@ def health_check():
         "timestamp": time.time(),
         "service": "Rocket Sniper Bot"
     }), 200
+
+APP_VERSION = "debug-2025-12-18-2"
+
+LAST = {"raw_count": 0, "last_error": None, "last_status": None}
+
+def fetch_pairs():
+    url = "https://api.dexscreener.com/latest/dex/pairs/solana"  # exemple (à remplacer par ta vraie source)
+    r = requests.get(url, timeout=20)
+    LAST["last_status"] = r.status_code
+    r.raise_for_status()
+    data = r.json()
+    pairs = data.get("pairs", []) or []
+    return pairs
+
+@app.get("/scan")
+def scan():
+    t0 = time.time()
+    try:
+        pairs = fetch_pairs()
+        LAST["raw_count"] = len(pairs)
+        LAST["last_error"] = None
+
+        # TEMP: pas de filtre
+        tokens = pairs[:20]
+
+        return jsonify({
+            "success": True,
+            "version": APP_VERSION,
+            "tokens_found": len(tokens),
+            "tokens": tokens,
+            "debug": {
+                **LAST,
+                "fetch_ms": int((time.time()-t0)*1000)
+            }
+        })
+    except Exception as e:
+        LAST["last_error"] = str(e)
+        return jsonify({
+            "success": False,
+            "version": APP_VERSION,
+            "tokens_found": 0,
+            "tokens": [],
+            "debug": LAST
+        }), 500
 
 # ============================================================
 #          DÉMARRAGE
