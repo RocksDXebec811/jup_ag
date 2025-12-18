@@ -180,116 +180,171 @@ def health():
     
 @app.route('/scan')
 def scan():
-    """Endpoint de scan - version temporaire pour tester"""
-    import urllib.request
-    import json
-    
-    # Vérifie si le bot est démarré (adapté à ton code)
-    # if not bot_running:
-    #     return jsonify({"success": False, "message": "Bot non démarré"})
-    
+    """Endpoint de scan temporaire"""
     try:
-        # Utilise Jupiter API pour le test
-        url = "https://api.jup.ag/tokens/v3"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        # Vérifie si le bot est démarré (adapte à ta variable)
+        # if not bot_running:
+        #     return jsonify({"success": False, "message": "Bot non démarré"})
         
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            all_tokens = data.get('data', [])
-            
-            # Convertir au format de ton bot
-            tokens = []
-            for token in all_tokens[:10]:  # Prendre 10 tokens
-                tokens.append({
-                    'address': token.get('address'),
-                    'symbol': token.get('symbol'),
-                    'name': token.get('name'),
-                    'decimals': token.get('decimals'),
-                    # Ajouter des valeurs pour passer tes filtres
-                    'liquidity': 100000,  # Faux, mais pour voir
-                    'volume_24h': 50000,
-                    'market_cap': 1000000,
-                    'age_minutes': 30
-                })
-            
-            return jsonify({
-                "success": True,
-                "tokens": tokens,
-                "tokens_found": len(tokens),
-                "debug": {
-                    "source": "Jupiter API (test mode)",
-                    "warning": "This is temporary - fix your real scanner"
-                }
-            })
-            
+        # Test simple - retourne des tokens factices pour confirmer que l'endpoint marche
+        test_tokens = [
+            {
+                "address": "So11111111111111111111111111111111111111112",
+                "symbol": "TEST1",
+                "liquidity": 150000,
+                "market_cap": 2000000,
+                "volume_24h": 120000,
+                "age_minutes": 45
+            },
+            {
+                "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "symbol": "TEST2",
+                "liquidity": 80000,
+                "market_cap": 1500000,
+                "volume_24h": 90000,
+                "age_minutes": 30
+            }
+        ]
+        
+        return jsonify({
+            "success": True,
+            "tokens": test_tokens,
+            "tokens_found": len(test_tokens),
+            "debug": {
+                "mode": "test_data",
+                "next_step": "Implement real data source"
+            }
+        })
+        
     except Exception as e:
         return jsonify({
             "success": False,
             "error": str(e),
-            "tokens_found": 0
-        })
-
-
+            "traceback": "Check Render logs for details"
+        }), 500
 @app.route('/debug_fetch')
 def debug_fetch():
-    """Test endpoint - version qui MARCHE sans dépendances"""
+    """Test endpoint - version corrigée avec sources alternatives"""
     import urllib.request
     import json
     import time
     
-    try:
-        print("[DEBUG] Starting debug_fetch...", flush=True)
-        
-        # Test avec Jupiter API (fonctionne toujours)
-        url = "https://api.jup.ag/tokens/v3"
-        
-        print(f"[DEBUG] Calling {url}", flush=True)
-        start = time.time()
-        
-        # Créer la requête
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
+    # Liste des sources à tester
+    sources = [
+        {
+            "name": "Helius API (newest tokens)",
+            "url": "https://api.helius.xyz/v0/token-metadata?api-key=DEMO_KEY",
+            "headers": {"User-Agent": "Mozilla/5.0"},
+            "enabled": False  # Mettre True si tu as une clé
+        },
+        {
+            "name": "DexScreener (popular pairs)",
+            "url": "https://api.dexscreener.com/latest/dex/pairs/solana?limit=20",
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json"
-            }
-        )
-        
-        # Exécuter
-        with urllib.request.urlopen(req, timeout=15) as response:
-            elapsed = time.time() - start
-            data = response.read()
+            },
+            "enabled": True
+        },
+        {
+            "name": "Birdeye (trending)",
+            "url": "https://public-api.birdeye.so/defi/v3/tokenlist?sort_by=v24hUSD&sort_type=desc",
+            "headers": {
+                "User-Agent": "Mozilla/5.0",
+                "X-API-KEY": ""  # À remplir si tu as une clé
+            },
+            "enabled": False
+        },
+        {
+            "name": "Pump.fun (new tokens)",
+            "url": "https://frontend-api.pump.fun/coins",
+            "headers": {"User-Agent": "Mozilla/5.0"},
+            "enabled": True
+        }
+    ]
+    
+    for source in sources:
+        if not source["enabled"]:
+            continue
             
-            # Parse JSON
-            tokens = json.loads(data.decode('utf-8')).get('data', [])
+        try:
+            print(f"[DEBUG] Testing source: {source['name']}", flush=True)
+            start = time.time()
             
-            print(f"[DEBUG] HTTP {response.status} in {elapsed:.2f}s - Found {len(tokens)} tokens", flush=True)
+            req = urllib.request.Request(
+                source["url"],
+                headers=source["headers"]
+            )
             
-            # Retourne un échantillon
-            sample = []
-            for token in tokens[:5]:
-                sample.append({
-                    'symbol': token.get('symbol', 'N/A'),
-                    'name': token.get('name', 'N/A'),
-                    'address': token.get('address', 'N/A')[:15] + '...'
-                })
-            
-            return jsonify({
-                'success': True,
-                'source': 'Jupiter API',
-                'status': response.status,
-                'total_tokens': len(tokens),
-                'sample': sample,
-                'hint': 'API works! Now fix your /scan function'
-            })
-            
-    except Exception as e:
-        print(f"[DEBUG ERROR] {str(e)}", flush=True)
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'hint': 'Check your internet connection or API endpoint'
-        })
+            with urllib.request.urlopen(req, timeout=15) as response:
+                elapsed = time.time() - start
+                data = response.read().decode('utf-8')
+                
+                print(f"[DEBUG] {source['name']}: HTTP {response.status} in {elapsed:.2f}s", flush=True)
+                
+                # Essayer de parser JSON
+                try:
+                    json_data = json.loads(data)
+                    
+                    # Analyse basique selon la source
+                    if source["name"] == "DexScreener":
+                        pairs = json_data.get("pairs", [])
+                        sample = []
+                        for pair in pairs[:5]:
+                            sample.append({
+                                "symbol": pair.get("baseToken", {}).get("symbol", "?"),
+                                "liquidity": pair.get("liquidity", {}).get("usd", 0),
+                                "price": pair.get("priceUsd", 0),
+                                "created": pair.get("pairCreatedAt", 0)
+                            })
+                        return jsonify({
+                            "success": True,
+                            "source": source["name"],
+                            "status": response.status,
+                            "total_items": len(pairs),
+                            "sample": sample
+                        })
+                        
+                    elif source["name"] == "Pump.fun":
+                        # Pump.fun retourne une liste de coins
+                        coins = json_data if isinstance(json_data, list) else []
+                        sample = []
+                        for coin in coins[:5]:
+                            sample.append({
+                                "symbol": coin.get("symbol", "?"),
+                                "mint": coin.get("mint", "?")[:15] + "...",
+                                "price": coin.get("price", 0),
+                                "created": coin.get("createdAt", 0)
+                            })
+                        return jsonify({
+                            "success": True,
+                            "source": source["name"],
+                            "status": response.status,
+                            "total_items": len(coins),
+                            "sample": sample
+                        })
+                        
+                except json.JSONDecodeError:
+                    return jsonify({
+                        "success": True,
+                        "source": source["name"],
+                        "status": response.status,
+                        "raw_preview": data[:200],
+                        "note": "Response is not JSON"
+                    })
+                    
+        except Exception as e:
+            print(f"[DEBUG] Source {source['name']} failed: {str(e)}", flush=True)
+            continue
+    
+    # Si toutes les sources échouent
+    return jsonify({
+        "success": False,
+        "error": "All sources failed",
+        "hint": "Try enabling Helius or Birdeye with API keys",
+        "config_check": "Do you have HELIUS_API_KEY or BIRDEYE_API_KEY in env?"
+    })
+
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
     if not BOT_AVAILABLE:
