@@ -178,12 +178,101 @@ def home():
 def health():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
 
-@app.route('/scan_raydium')
-def scan_raydium():
-    """Scanner spécifique pour nouveaux tokens Raydium"""
+@app.route('/debug_fetch_new')
+def debug_fetch_new():
+    """Scanner les NOUVELLES paires Raydium (moins de 10 minutes)"""
+    import urllib.request
+    import json
+    import time
+    
     try:
-        # Récupérer les paires Raydium récentes
-        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
+        print("[DEBUG] Scanning NEW Raydium pairs...", flush=True)
+        
+        # ENDPOINT POUR NOUVELLES PAIRES (moins de 1h)
+        url = "https://api.dexscreener.com/latest/dex/pairs/new"
+        
+        print(f"[DEBUG] Calling: {url}", flush=True)
+        start = time.time()
+        
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Referer": "https://dexscreener.com/"
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=20) as response:
+            elapsed = time.time() - start
+            data = json.loads(response.read().decode('utf-8'))
+            
+            pairs = data.get("pairs", [])
+            
+            print(f"[DEBUG] Found {len(pairs)} new pairs total", flush=True)
+            
+            # Filtrer pour ne garder que Raydium
+            raydium_pairs = [p for p in pairs if p.get('dexId') == 'raydium']
+            
+            print(f"[DEBUG] Found {len(raydium_pairs)} new Raydium pairs", flush=True)
+            
+            # Affiche les paires avec leurs stats
+            sample = []
+            for pair in raydium_pairs[:10]:
+                created_at = pair.get('pairCreatedAt', 0)
+                if created_at:
+                    age_seconds = int(time.time() - (created_at / 1000))
+                    age_minutes = age_seconds / 60
+                else:
+                    age_seconds = 0
+                    age_minutes = 0
+                    
+                sample.append({
+                    'symbol': pair.get('baseToken', {}).get('symbol', '?'),
+                    'pairAddress': pair.get('pairAddress', '?')[:15] + '...',
+                    'liquidity_usd': pair.get('liquidity', {}).get('usd', 0),
+                    'price': pair.get('priceUsd', 0),
+                    'volume_24h': pair.get('volume', {}).get('h24', 0),
+                    'age_seconds': age_seconds,
+                    'age_minutes': round(age_minutes, 2),
+                    'dex': pair.get('dexId', '?')
+                })
+            
+            return jsonify({
+                'success': True,
+                'source': 'NEW Raydium pairs (latest)',
+                'status': response.status,
+                'total_pairs': len(pairs),
+                'raydium_pairs': len(raydium_pairs),
+                'sample': sample,
+                'hint': 'These are NEW Raydium pairs (from "new" endpoint). Filter for age < 10min.'
+            })
+            
+    except Exception as e:
+        print(f"[DEBUG ERROR] {str(e)}", flush=True)
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'hint': 'New pairs scan failed. Try another method.'
+        })
+    
+@app.route('/scan')
+def scan():
+    """Scanner pour nouveaux tokens Raydium (production)"""
+    import urllib.request
+    import json
+    import time
+    import os
+    
+    try:
+        # Vérifie si le bot est démarré (adapte à ta logique)
+        # if not bot_running:
+        #     return jsonify({"success": False, "message": "Bot non démarré"})
+        
+        print(f"[SCAN] Starting scan at {time.time()}", flush=True)
+        
+        # Option 1: Utiliser l'endpoint "new"
+        url = "https://api.dexscreener.com/latest/dex/pairs/new"
         
         req = urllib.request.Request(
             url,
@@ -194,91 +283,80 @@ def scan_raydium():
             data = json.loads(response.read().decode('utf-8'))
             all_pairs = data.get("pairs", [])
             
-            # Filtrer pour les NOUVELLES paires (moins de 10 minutes)
-            current_time = time.time()
-            new_pairs = []
+            # Filtrer pour Raydium seulement
+            raydium_pairs = [p for p in all_pairs if p.get('dexId') == 'raydium']
             
-            for pair in all_pairs:
+            current_time = time.time()
+            filtered_tokens = []
+            
+            for pair in raydium_pairs:
+                # Calculer l'âge
                 created_at = pair.get('pairCreatedAt', 0)
-                if created_at:
-                    age_seconds = current_time - (created_at / 1000)
-                    age_minutes = age_seconds / 60
+                if not created_at:
+                    continue
                     
-                    # Critères pour nouveaux tokens Raydium
-                    liquidity = pair.get('liquidity', {}).get('usd', 0)
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                # Récupérer les stats
+                liquidity = pair.get('liquidity', {}).get('usd', 0)
+                volume_24h = pair.get('volume', {}).get('h24', 0)
+                price = pair.get('priceUsd', 0)
+                
+                # CRITÈRES POUR NOUVEAUX TOKENS RAYDIUM :
+                # 1. Âge : 1-10 minutes (pas 1-60)
+                # 2. Liquidité : > 5,000 (pas 50,000)
+                # 3. Volume 24h : > 1,000 (pas 100,000)
+                # 4. Market Cap : calculé approximativement
+                
+                # Calculer market cap approximatif
+                base_token = pair.get('baseToken', {})
+                supply = base_token.get('totalSupply', 0)
+                market_cap = price * supply if supply and price else 0
+                
+                # TES FILTRES (à ajuster selon tes besoins)
+                if (age_minutes >= 1 and age_minutes <= 10 and  # 1-10 min seulement
+                    liquidity >= 5000 and                      # Baissé de 50000
+                    volume_24h >= 1000 and                     # Baissé de 100000
+                    market_cap >= 0):                          # Pas de minimum
                     
-                    # Prendre les tokens de moins de 10 minutes avec liquidité > 5k
-                    if age_minutes < 10 and liquidity > 5000:
-                        new_pairs.append({
-                            'address': pair.get('baseToken', {}).get('address', ''),
-                            'symbol': pair.get('baseToken', {}).get('symbol', ''),
-                            'name': pair.get('baseToken', {}).get('name', ''),
-                            'liquidity': liquidity,
-                            'price': pair.get('priceUsd', 0),
-                            'volume_24h': pair.get('volume', {}).get('h24', 0),
-                            'age_minutes': round(age_minutes, 2),
-                            'pair_address': pair.get('pairAddress', ''),
-                            'url': pair.get('url', '')
-                        })
+                    filtered_tokens.append({
+                        'address': base_token.get('address', ''),
+                        'symbol': base_token.get('symbol', ''),
+                        'name': base_token.get('name', ''),
+                        'liquidity': liquidity,
+                        'price': price,
+                        'volume_24h': volume_24h,
+                        'market_cap': market_cap,
+                        'age_minutes': round(age_minutes, 2),
+                        'pair_address': pair.get('pairAddress', ''),
+                        'url': pair.get('url', ''),
+                        'dex': pair.get('dexId', '')
+                    })
+            
+            print(f"[SCAN] Found {len(filtered_tokens)} tokens matching criteria", flush=True)
             
             return jsonify({
-                'success': True,
-                'tokens': new_pairs,
-                'tokens_found': len(new_pairs),
-                'debug': {
-                    'source': 'Raydium new pairs (<10min)',
-                    'total_scanned': len(all_pairs),
-                    'filters': 'age<10min, liquidity>5k'
+                "success": True,
+                "tokens": filtered_tokens,
+                "tokens_found": len(filtered_tokens),
+                "scan_time": time.time(),
+                "debug": {
+                    "source": "DexScreener new pairs (Raydium only)",
+                    "total_pairs_scanned": len(all_pairs),
+                    "raydium_pairs": len(raydium_pairs),
+                    "filters_applied": "age: 1-10min, liquidity: >5k, volume: >1k"
                 }
             })
             
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-    
-@app.route('/scan')
-def scan():
-    """Endpoint de scan temporaire"""
-    try:
-        # Vérifie si le bot est démarré (adapte à ta variable)
-        # if not bot_running:
-        #     return jsonify({"success": False, "message": "Bot non démarré"})
-        
-        # Test simple - retourne des tokens factices pour confirmer que l'endpoint marche
-        test_tokens = [
-            {
-                "address": "So11111111111111111111111111111111111111112",
-                "symbol": "TEST1",
-                "liquidity": 150000,
-                "market_cap": 2000000,
-                "volume_24h": 120000,
-                "age_minutes": 45
-            },
-            {
-                "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                "symbol": "TEST2",
-                "liquidity": 80000,
-                "market_cap": 1500000,
-                "volume_24h": 90000,
-                "age_minutes": 30
-            }
-        ]
-        
-        return jsonify({
-            "success": True,
-            "tokens": test_tokens,
-            "tokens_found": len(test_tokens),
-            "debug": {
-                "mode": "test_data",
-                "next_step": "Implement real data source"
-            }
-        })
-        
-    except Exception as e:
+        print(f"[SCAN ERROR] {str(e)}", flush=True)
         return jsonify({
             "success": False,
             "error": str(e),
-            "traceback": "Check Render logs for details"
-        }), 500
+            "tokens_found": 0
+        })
+        
 @app.route('/debug_fetch')
 def debug_fetch():
     """Scan spécifique Raydium"""
