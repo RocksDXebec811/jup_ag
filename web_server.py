@@ -230,16 +230,18 @@ def debug_fetch():
             'hint': 'Raydium scan failed.'
         })
 
-@app.route('/debug_fetch_new')
-def debug_fetch_new():
-    """Scanner nouvelles paires Raydium"""
+@app.route('/debug_fetch_pump')
+def debug_fetch_pump():
+    """Scanner les NOUVEAUX tokens Pump.fun (moins de 10 minutes)"""
     import urllib.request
     import json as json_module
     import time
     
     try:
-        print("[DEBUG] Scanning NEW Raydium pairs...", flush=True)
-        url = "https://api.dexscreener.com/latest/dex/pairs/new"
+        print("[DEBUG] Scanning Pump.fun new coins...", flush=True)
+        
+        # Pump.fun API pour nouveaux tokens
+        url = "https://frontend-api.pump.fun/coins"
         
         print(f"[DEBUG] Calling: {url}", flush=True)
         start = time.time()
@@ -247,51 +249,51 @@ def debug_fetch_new():
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json",
-                "Referer": "https://dexscreener.com/"
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json"
             }
         )
         
         with urllib.request.urlopen(req, timeout=20) as response:
             elapsed = time.time() - start
             data = json_module.loads(response.read().decode('utf-8'))
-            pairs = data.get("pairs", [])
             
-            print(f"[DEBUG] Found {len(pairs)} new pairs total", flush=True)
+            # Les coins sont déjà triés par date (les plus récents en premier)
+            coins = data if isinstance(data, list) else []
             
-            raydium_pairs = [p for p in pairs if p.get('dexId') == 'raydium']
-            print(f"[DEBUG] Found {len(raydium_pairs)} new Raydium pairs", flush=True)
+            print(f"[DEBUG] Found {len(coins)} Pump.fun coins", flush=True)
             
-            sample = []
-            for pair in raydium_pairs[:10]:
-                created_at = pair.get('pairCreatedAt', 0)
+            current_time = time.time()
+            recent_coins = []
+            
+            for coin in coins[:20]:  # 20 premiers
+                created_at = coin.get('createdAt', 0)
                 if created_at:
-                    age_seconds = int(time.time() - (created_at / 1000))
+                    age_seconds = current_time - (created_at / 1000)
                     age_minutes = age_seconds / 60
-                else:
-                    age_seconds = 0
-                    age_minutes = 0
                     
-                sample.append({
-                    'symbol': pair.get('baseToken', {}).get('symbol', '?'),
-                    'pairAddress': pair.get('pairAddress', '?')[:15] + '...',
-                    'liquidity_usd': pair.get('liquidity', {}).get('usd', 0),
-                    'price': pair.get('priceUsd', 0),
-                    'volume_24h': pair.get('volume', {}).get('h24', 0),
-                    'age_seconds': age_seconds,
-                    'age_minutes': round(age_minutes, 2),
-                    'dex': pair.get('dexId', '?')
-                })
+                    # Prendre seulement les tokens de moins de 10 minutes
+                    if age_minutes < 10:
+                        recent_coins.append({
+                            'symbol': coin.get('symbol', '?'),
+                            'name': coin.get('name', '?'),
+                            'mint': coin.get('mint', '?')[:15] + '...',
+                            'price_sol': coin.get('price', 0),
+                            'liquidity': coin.get('liquidity', 0),
+                            'age_seconds': int(age_seconds),
+                            'age_minutes': round(age_minutes, 2),
+                            'holders': coin.get('holders', 0),
+                            'market_cap': coin.get('marketCap', 0)
+                        })
             
             return jsonify({
                 'success': True,
-                'source': 'NEW Raydium pairs (latest)',
+                'source': 'Pump.fun (new coins <10min)',
                 'status': response.status,
-                'total_pairs': len(pairs),
-                'raydium_pairs': len(raydium_pairs),
-                'sample': sample,
-                'hint': 'These are NEW Raydium pairs (from "new" endpoint). Filter for age < 10min.'
+                'total_coins': len(coins),
+                'recent_coins': len(recent_coins),
+                'coins': recent_coins[:10],
+                'hint': 'These are NEW Pump.fun coins (<10min). Use for immediate trading.'
             })
             
     except Exception as e:
@@ -299,7 +301,7 @@ def debug_fetch_new():
         return jsonify({
             'success': False,
             'error': str(e),
-            'hint': 'New pairs scan failed.'
+            'hint': 'Try using DexScreener new pairs instead'
         })
 
 @app.route('/test_scan_simple')
@@ -464,6 +466,82 @@ def scan_route():
         "tokens_found": len(tokens),
         "tokens": tokens[:10]
     })
+
+@app.route('/scan_direct')
+def scan_direct():
+    """Scan direct sans vérifier l'état du bot"""
+    import urllib.request
+    import json as json_module
+    import time
+    
+    try:
+        # Utilise l'endpoint "new" pour paires récentes
+        url = "https://api.dexscreener.com/latest/dex/pairs/new"
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json_module.loads(response.read().decode('utf-8'))
+            all_pairs = data.get("pairs", [])
+            
+            # Filtrer pour Raydium seulement
+            raydium_pairs = [p for p in all_pairs if p.get('dexId') == 'raydium']
+            
+            current_time = time.time()
+            filtered_tokens = []
+            
+            for pair in raydium_pairs:
+                created_at = pair.get('pairCreatedAt', 0)
+                if not created_at:
+                    continue
+                    
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                liquidity = pair.get('liquidity', {}).get('usd', 0)
+                volume_24h = pair.get('volume', {}).get('h24', 0)
+                price = pair.get('priceUsd', 0)
+                
+                # FILTRES PLUS LARGES pour voir des résultats
+                if (age_minutes >= 1 and age_minutes <= 60 and  # 1-60 minutes
+                    liquidity >= 1000 and                       # Liquidity > 1k (au lieu de 50k)
+                    volume_24h >= 1000):                        # Volume > 1k (au lieu de 100k)
+                    
+                    base_token = pair.get('baseToken', {})
+                    
+                    filtered_tokens.append({
+                        'address': base_token.get('address', ''),
+                        'symbol': base_token.get('symbol', ''),
+                        'name': base_token.get('name', ''),
+                        'liquidity': liquidity,
+                        'price': price,
+                        'volume_24h': volume_24h,
+                        'age_minutes': round(age_minutes, 2),
+                        'pair_address': pair.get('pairAddress', ''),
+                        'url': pair.get('url', '')
+                    })
+            
+            return jsonify({
+                "success": True,
+                "tokens": filtered_tokens[:20],
+                "tokens_found": len(filtered_tokens),
+                "debug": {
+                    "source": "DexScreener new pairs (direct)",
+                    "total_pairs": len(all_pairs),
+                    "raydium_pairs": len(raydium_pairs),
+                    "filters": "age: 1-60min, liquidity: >1k, volume: >1k"
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
 
 # =========================================
 # Main
