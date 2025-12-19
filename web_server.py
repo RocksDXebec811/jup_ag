@@ -3,7 +3,7 @@
 
 """
 Rocket Sniper Bot - Web Server (Render)
-Version complète avec toutes les modifications
+Version complète avec support Birdeye, Helius et DexScreener
 """
 
 from dotenv import load_dotenv
@@ -141,7 +141,7 @@ def stop_bot() -> Tuple[bool, str]:
         return False, f"Erreur arrêt: {str(e)[:180]}"
 
 # =========================================
-# Routes
+# Routes principales
 # =========================================
 @app.route("/", methods=["GET"])
 def home():
@@ -165,6 +165,9 @@ def home():
             "/test_raydium_api (GET)",
             "/debug_bot_state (GET)",
             "/scan_raydium_birdeye (GET)",
+            "/scan_helius (GET)",
+            "/scan_new_tokens (GET)",
+            "/test_birdeye (GET)",
             "/update_config (POST)"
         ]
     })
@@ -173,9 +176,12 @@ def home():
 def health():
     return jsonify({"status": "healthy", "timestamp": time.time()}), 200
 
+# =========================================
+# Routes de debug et test
+# =========================================
 @app.route('/debug_fetch')
 def debug_fetch():
-    """Scanner Raydium"""
+    """Scanner Raydium via DexScreener"""
     import urllib.request
     import json as json_module
     import time
@@ -246,7 +252,6 @@ def debug_fetch_new():
     try:
         print("[DEBUG] Scanning NEW Raydium pairs...", flush=True)
         
-        # Même endpoint que /debug_fetch mais avec filtre temporel
         url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
         
         print(f"[DEBUG] Calling: {url}", flush=True)
@@ -279,13 +284,11 @@ def debug_fetch_new():
                 age_seconds = current_time - (created_at / 1000)
                 age_minutes = age_seconds / 60
                 
-                # Filtrer pour paires de moins de 60 minutes
                 if age_minutes <= 60:
                     new_pairs.append(pair)
             
             print(f"[DEBUG] Found {len(new_pairs)} Raydium pairs <60min", flush=True)
             
-            # Affiche les paires récentes
             sample = []
             for pair in new_pairs[:10]:
                 created_at = pair.get('pairCreatedAt', 0)
@@ -318,7 +321,7 @@ def debug_fetch_new():
         return jsonify({
             'success': False,
             'error': str(e),
-            'hint': 'Failed to scan new pairs. The API endpoint may have changed.'
+            'hint': 'Failed to scan new pairs.'
         })
 
 @app.route('/test_scan_simple')
@@ -371,7 +374,6 @@ def scan_direct():
     try:
         print("[SCAN DIRECT] Starting direct scan...", flush=True)
         
-        # Utilise l'endpoint de recherche Raydium
         url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
         
         req = urllib.request.Request(
@@ -389,11 +391,9 @@ def scan_direct():
             filtered_tokens = []
             
             for pair in all_pairs:
-                # Vérifie que c'est Raydium
                 if pair.get('dexId') != 'raydium':
                     continue
                 
-                # Calcule l'âge
                 created_at = pair.get('pairCreatedAt', 0)
                 if not created_at:
                     continue
@@ -401,15 +401,12 @@ def scan_direct():
                 age_seconds = current_time - (created_at / 1000)
                 age_minutes = age_seconds / 60
                 
-                # Récupère les stats
                 liquidity = pair.get('liquidity', {}).get('usd', 0)
                 volume_24h = pair.get('volume', {}).get('h24', 0)
-                price = pair.get('priceUsd', 0)
                 
-                # **FILTRES RÉALISTES** pour nouveaux tokens Raydium
-                if (age_minutes >= 1 and age_minutes <= 60 and    # 1-60 minutes
-                    liquidity >= 5000 and                         # Liquidity > 5k (pas 50k)
-                    volume_24h >= 1000):                          # Volume > 1k (pas 100k)
+                if (age_minutes >= 1 and age_minutes <= 60 and
+                    liquidity >= 5000 and
+                    volume_24h >= 1000):
                     
                     base_token = pair.get('baseToken', {})
                     
@@ -418,7 +415,7 @@ def scan_direct():
                         'symbol': base_token.get('symbol', ''),
                         'name': base_token.get('name', ''),
                         'liquidity': liquidity,
-                        'price': price,
+                        'price': pair.get('priceUsd', 0),
                         'volume_24h': volume_24h,
                         'age_minutes': round(age_minutes, 2),
                         'pair_address': pair.get('pairAddress', ''),
@@ -458,13 +455,12 @@ def scan_with_filters():
     import json as json_module
     import time
     
-    # FILTRES RÉALISTES pour Raydium
     FILTERS = {
-        "min_age": 1,          # 1 minute minimum
-        "max_age": 180,        # 3 heures maximum
-        "min_liquidity": 10000, # 10k USD
-        "min_volume": 10000,   # 10k USD
-        "min_mcap": 100000     # 100k USD
+        "min_age": 1,
+        "max_age": 180,
+        "min_liquidity": 10000,
+        "min_volume": 10000,
+        "min_mcap": 100000
     }
     
     try:
@@ -494,12 +490,10 @@ def scan_with_filters():
                 volume_24h = pair.get('volume', {}).get('h24', 0)
                 price = pair.get('priceUsd', 0)
                 
-                # Calculer market cap approximatif
                 base_token = pair.get('baseToken', {})
                 supply = base_token.get('totalSupply', 0)
                 market_cap = price * supply if supply and price else 0
                 
-                # Appliquer filtres
                 if (age_minutes >= FILTERS["min_age"] and 
                     age_minutes <= FILTERS["max_age"] and
                     liquidity >= FILTERS["min_liquidity"] and
@@ -519,7 +513,6 @@ def scan_with_filters():
                         'url': pair.get('url', '')
                     })
             
-            # Trier par âge (plus récent d'abord)
             filtered_tokens.sort(key=lambda x: x['age_minutes'])
             
             return jsonify({
@@ -575,7 +568,6 @@ def test_raydium_api():
                 data = json_module.loads(response.read().decode('utf-8'))
                 pairs = data.get("pairs", [])
                 
-                # Analyser l'âge des paires
                 current_time = time.time()
                 recent_pairs = []
                 
@@ -585,7 +577,7 @@ def test_raydium_api():
                         age_seconds = current_time - (created_at / 1000)
                         age_minutes = age_seconds / 60
                         
-                        if age_minutes <= 180:  # Moins de 3 heures
+                        if age_minutes <= 180:
                             recent_pairs.append({
                                 "symbol": pair.get('baseToken', {}).get('symbol', '?'),
                                 "age_minutes": round(age_minutes, 1),
@@ -624,6 +616,39 @@ def debug_bot_state():
         "BOT_AVAILABLE": BOT_AVAILABLE
     })
 
+# =========================================
+# Routes API Birdeye et Helius
+# =========================================
+@app.route('/test_birdeye')
+def test_birdeye():
+    """Tester Birdeye API avec clé"""
+    api_key = os.environ.get('BIRDEYE_API_KEY')
+    
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "error": "BIRDEYE_API_KEY manquante",
+            "hint": "Obtenez une clé gratuite sur https://birdeye.so/"
+        })
+    
+    import requests
+    
+    try:
+        url = "https://public-api.birdeye.so/public/tokenlist"
+        params = {"sort_by": "v24hUSD", "limit": 5}
+        headers = {"X-API-KEY": api_key}
+        
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        
+        return jsonify({
+            "success": True,
+            "status": response.status_code,
+            "data": response.json() if response.status_code == 200 else response.text[:200]
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 @app.route('/scan_raydium_birdeye')
 def scan_raydium_birdeye_route():
     """Scanner Raydium via Birdeye API"""
@@ -631,13 +656,12 @@ def scan_raydium_birdeye_route():
     import time
     
     try:
-        # Obtenir la clé API depuis les variables d'environnement
         api_key = os.environ.get('BIRDEYE_API_KEY')
         if not api_key:
             return jsonify({
                 "success": False,
                 "error": "BIRDEYE_API_KEY non définie",
-                "hint": "Obtenez une clé gratuite sur https://birdeye.so/"
+                "hint": "Ajoute BIRDEYE_API_KEY dans les variables d'environnement Render"
             })
         
         print("[BIRDEYE] Scanning via Birdeye API...", flush=True)
@@ -666,17 +690,13 @@ def scan_raydium_birdeye_route():
             
             print(f"[BIRDEYE] Found {len(tokens)} tokens", flush=True)
             
-            # Filtrer pour Raydium seulement et tokens récents
-            current_time = time.time()
             filtered_tokens = []
             
             for token in tokens:
-                # Vérifier si le token est sur Raydium
                 markets = token.get('markets', '')
                 if 'raydium' not in markets.lower():
                     continue
                 
-                # Récupérer les données
                 address = token.get('address', '')
                 symbol = token.get('symbol', '')
                 name = token.get('name', '')
@@ -685,9 +705,9 @@ def scan_raydium_birdeye_route():
                 volume_24h = token.get('volume24h', 0)
                 market_cap = token.get('market_cap', 0)
                 
-                if (liquidity >= 10000 and      # 10k USD minimum
-                    volume_24h >= 10000 and     # 10k USD volume 24h
-                    market_cap >= 100000):      # 100k USD market cap
+                if (liquidity >= 10000 and
+                    volume_24h >= 10000 and
+                    market_cap >= 100000):
                     
                     filtered_tokens.append({
                         'address': address,
@@ -698,7 +718,7 @@ def scan_raydium_birdeye_route():
                         'volume_24h': volume_24h,
                         'market_cap': market_cap,
                         'source': 'Birdeye API',
-                        'age_minutes': 'N/A (Birdeye ne fournit pas cette info)'
+                        'age_minutes': 'N/A'
                     })
             
             print(f"[BIRDEYE] Found {len(filtered_tokens)} Raydium tokens matching criteria", flush=True)
@@ -732,13 +752,190 @@ def scan_raydium_birdeye_route():
             "tokens_found": 0
         })
 
+@app.route('/scan_helius')
+def scan_helius():
+    """Scanner les nouvelles pools Raydium via Helius"""
+    import requests
+    import time
+    
+    try:
+        helius_key = os.environ.get('HELIUS_API_KEY')
+        if not helius_key:
+            return jsonify({
+                "success": False,
+                "error": "HELIUS_API_KEY non définie"
+            })
+        
+        print("[HELIUS] Scanning for new Raydium pools...", flush=True)
+        
+        url = f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSignaturesForAddress",
+            "params": [
+                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+                {
+                    "limit": 50,
+                    "commitment": "finalized"
+                }
+            ]
+        }
+        
+        start = time.time()
+        response = requests.post(url, json=payload, timeout=15)
+        elapsed = time.time() - start
+        
+        if response.status_code != 200:
+            return jsonify({
+                "success": False,
+                "error": f"Helius error: {response.status_code}",
+                "response": response.text[:200]
+            })
+        
+        data = response.json()
+        signatures = data.get("result", [])
+        
+        print(f"[HELIUS] Found {len(signatures)} recent transactions", flush=True)
+        
+        tokens = []
+        
+        for sig in signatures[:5]:
+            sig_str = sig.get("signature", "")
+            if not sig_str:
+                continue
+            
+            detail_payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTransaction",
+                "params": [
+                    sig_str,
+                    {
+                        "encoding": "json",
+                        "maxSupportedTransactionVersion": 0,
+                        "commitment": "finalized"
+                    }
+                ]
+            }
+            
+            try:
+                detail_response = requests.post(url, json=detail_payload, timeout=10)
+                if detail_response.status_code == 200:
+                    tx_data = detail_response.json()
+                    meta = tx_data.get("result", {}).get("meta", {})
+                    
+                    if meta:
+                        tokens.append({
+                            "address": "N/A (analyse complexe)",
+                            "symbol": "RAYDIUM_TX",
+                            "name": f"Transaction {sig_str[:10]}...",
+                            "source": "Helius",
+                            "transaction": sig_str[:20] + "...",
+                            "timestamp": time.strftime('%H:%M:%S')
+                        })
+                        
+            except Exception as e:
+                print(f"[HELIUS] Error parsing tx {sig_str[:10]}...: {e}", flush=True)
+                continue
+        
+        return jsonify({
+            "success": True,
+            "tokens": tokens,
+            "tokens_found": len(tokens),
+            "debug": {
+                "source": "Helius API",
+                "signatures_found": len(signatures),
+                "parsed_transactions": len(tokens),
+                "api_time_ms": round(elapsed * 1000, 2)
+            }
+        })
+        
+    except Exception as e:
+        print(f"[HELIUS ERROR] {str(e)}", flush=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
+
+@app.route('/scan_new_tokens')
+def scan_new_tokens():
+    """Scanner les NOUVEAUX tokens via Birdeye"""
+    import requests
+    import time
+    
+    try:
+        api_key = os.environ.get('BIRDEYE_API_KEY')
+        if not api_key:
+            return jsonify({"success": False, "error": "BIRDEYE_API_KEY manquante"})
+        
+        print("[NEW TOKENS] Scanning for new tokens...", flush=True)
+        
+        url = "https://public-api.birdeye.so/public/tokenlist"
+        
+        params = {
+            "sort_by": "createdAt",
+            "sort_type": "desc",
+            "offset": 0,
+            "limit": 50
+        }
+        
+        headers = {
+            "X-API-KEY": api_key,
+            "User-Agent": "Mozilla/5.0"
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            tokens = data.get("data", {}).get("tokens", [])
+            
+            current_time = time.time()
+            new_tokens = []
+            
+            for token in tokens:
+                created_at = token.get('createdAt', 0)
+                if created_at:
+                    age_hours = (current_time - created_at) / 3600
+                    
+                    if age_hours < 24:
+                        new_tokens.append({
+                            'address': token.get('address', ''),
+                            'symbol': token.get('symbol', ''),
+                            'name': token.get('name', ''),
+                            'created_at': time.strftime('%Y-%m-%d %H:%M', time.localtime(created_at)),
+                            'age_hours': round(age_hours, 2),
+                            'markets': token.get('markets', ''),
+                            'liquidity': token.get('liquidity', 0),
+                            'price': token.get('price', 0)
+                        })
+            
+            return jsonify({
+                "success": True,
+                "tokens": new_tokens,
+                "tokens_found": len(new_tokens),
+                "debug": {
+                    "source": "Birdeye New Tokens",
+                    "total_tokens": len(tokens),
+                    "age_filter": "<24h"
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+# =========================================
+# Routes de configuration
+# =========================================
 @app.route("/update_config", methods=["POST"])
 def update_config():
     """Mettre à jour la configuration du bot"""
     try:
         data = request.json or {}
         
-        # Mettre à jour la configuration
         if 'min_liquidity' in data:
             Config.MIN_LIQUIDITY_USD = float(data['min_liquidity'])
         if 'min_mcap' in data:
@@ -764,6 +961,9 @@ def update_config():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
+# =========================================
+# Routes de gestion du bot
+# =========================================
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
     if not BOT_AVAILABLE:
@@ -837,55 +1037,179 @@ def toggle_auto():
 
 @app.route("/scan", methods=["GET"])
 def scan_route():
-    """Endpoint principal de scan"""
-    if not bot_instance or not getattr(bot_instance, "running", False):
-        return jsonify({"success": False, "message": "Bot non démarré"}), 400
+    """Scanner principal - utilise Birdeye si disponible, sinon DexScreener"""
+    import requests
+    import time
     
-    raw = request.args.get("raw", "0") == "1"
-    debug = request.args.get("debug", "0") == "1"
-
-    # Mode RAW: retourne les paires brutes
-    if raw:
-        try:
-            import urllib.request
-            import json as json_module
+    try:
+        # Vérifie si le bot est démarré
+        if not bot_instance or not getattr(bot_instance, "running", False):
+            return jsonify({"success": False, "message": "Bot non démarré"}), 400
+        
+        print("[SCAN] Starting main scan...", flush=True)
+        
+        # Essayer Birdeye d'abord si la clé est disponible
+        api_key = os.environ.get('BIRDEYE_API_KEY')
+        if api_key:
+            print("[SCAN] Using Birdeye API...", flush=True)
             
-            url = "https://api.dexscreener.com/latest/dex/pairs/solana?limit=100"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            url = "https://public-api.birdeye.so/public/tokenlist"
             
-            with urllib.request.urlopen(req, timeout=15) as response:
-                data = json_module.loads(response.read().decode('utf-8'))
-                pairs = data.get("pairs", [])[:50]
+            params = {
+                "sort_by": "v24hUSD",
+                "sort_type": "desc",
+                "offset": 0,
+                "limit": 100
+            }
+            
+            headers = {
+                "X-API-KEY": api_key,
+                "User-Agent": "Mozilla/5.0"
+            }
+            
+            start = time.time()
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            elapsed = time.time() - start
+            
+            if response.status_code == 200:
+                data = response.json()
+                tokens = data.get("data", {}).get("tokens", [])
+                
+                print(f"[SCAN] Found {len(tokens)} tokens from Birdeye", flush=True)
+                
+                filtered_tokens = []
+                
+                for token in tokens:
+                    markets = token.get('markets', '')
+                    if 'raydium' not in markets.lower():
+                        continue
+                    
+                    address = token.get('address', '')
+                    symbol = token.get('symbol', '')
+                    name = token.get('name', '')
+                    price = token.get('price', 0)
+                    liquidity = token.get('liquidity', 0)
+                    volume_24h = token.get('volume24h', 0)
+                    market_cap = token.get('market_cap', 0)
+                    
+                    if (liquidity >= Config.MIN_LIQUIDITY_USD and
+                        market_cap >= Config.MIN_MARKET_CAP_USD and
+                        volume_24h >= Config.MIN_VOLUME_24H_USD):
+                        
+                        filtered_tokens.append({
+                            'address': address,
+                            'symbol': symbol,
+                            'name': name,
+                            'liquidity': liquidity,
+                            'price': price,
+                            'volume_24h': volume_24h,
+                            'market_cap': market_cap,
+                            'source': 'Birdeye',
+                            'url': f"https://birdeye.so/token/{address}?chain=solana"
+                        })
+                
+                print(f"[SCAN] Found {len(filtered_tokens)} tokens matching criteria", flush=True)
                 
                 return jsonify({
                     "success": True,
-                    "pairs_count": len(pairs),
-                    "pairs": pairs[:10]  # Limite pour éviter une trop grande réponse
+                    "tokens": filtered_tokens[:20],
+                    "tokens_found": len(filtered_tokens),
+                    "debug": {
+                        "source": "Birdeye API",
+                        "api_time_ms": round(elapsed * 1000, 2),
+                        "total_tokens": len(tokens),
+                        "config_used": {
+                            "min_liquidity": Config.MIN_LIQUIDITY_USD,
+                            "min_mcap": Config.MIN_MARKET_CAP_USD,
+                            "min_volume": Config.MIN_VOLUME_24H_USD
+                        }
+                    }
                 })
+        
+        # Fallback: Utiliser DexScreener
+        print("[SCAN] Falling back to DexScreener...", flush=True)
+        import urllib.request
+        import json as json_module
+        
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json_module.loads(response.read().decode('utf-8'))
+            all_pairs = data.get("pairs", [])
+            
+            current_time = time.time()
+            filtered_tokens = []
+            
+            for pair in all_pairs:
+                if pair.get('dexId') != 'raydium':
+                    continue
                 
-        except Exception as e:
-            return jsonify({"success": False, "message": f"raw error: {str(e)[:180]}"}), 500
-
-    # Mode NORMAL: utilise la logique du bot
-    try:
-        # Si le bot a une méthode scan_dexscreener
-        if hasattr(bot_instance, 'engine') and hasattr(bot_instance.engine, 'scan_dexscreener'):
-            loop = asyncio.new_event_loop()
-            tokens = loop.run_until_complete(bot_instance.engine.scan_dexscreener())
-            loop.close()
-        else:
-            # Fallback: scan simple
-            tokens = []
+                created_at = pair.get('pairCreatedAt', 0)
+                if not created_at:
+                    continue
+                    
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                liquidity = pair.get('liquidity', {}).get('usd', 0)
+                volume_24h = pair.get('volume', {}).get('h24', 0)
+                price = pair.get('priceUsd', 0)
+                
+                base_token = pair.get('baseToken', {})
+                supply = base_token.get('totalSupply', 0)
+                market_cap = price * supply if supply and price else 0
+                
+                if (age_minutes >= Config.MIN_AGE_MINUTES and 
+                    age_minutes <= Config.MAX_AGE_MINUTES and
+                    liquidity >= Config.MIN_LIQUIDITY_USD and
+                    volume_24h >= Config.MIN_VOLUME_24H_USD and
+                    market_cap >= Config.MIN_MARKET_CAP_USD):
+                    
+                    filtered_tokens.append({
+                        'address': base_token.get('address', ''),
+                        'symbol': base_token.get('symbol', ''),
+                        'name': base_token.get('name', ''),
+                        'liquidity': liquidity,
+                        'price': price,
+                        'volume_24h': volume_24h,
+                        'market_cap': market_cap,
+                        'age_minutes': round(age_minutes, 2),
+                        'pair_address': pair.get('pairAddress', ''),
+                        'url': pair.get('url', ''),
+                        'source': 'DexScreener'
+                    })
+            
+            filtered_tokens.sort(key=lambda x: x['age_minutes'])
+            
+            return jsonify({
+                "success": True,
+                "tokens": filtered_tokens[:20],
+                "tokens_found": len(filtered_tokens),
+                "debug": {
+                    "source": "DexScreener (fallback)",
+                    "total_pairs": len(all_pairs),
+                    "config": {
+                        "min_age": Config.MIN_AGE_MINUTES,
+                        "max_age": Config.MAX_AGE_MINUTES,
+                        "min_liquidity": Config.MIN_LIQUIDITY_USD,
+                        "min_volume": Config.MIN_VOLUME_24H_USD,
+                        "min_mcap": Config.MIN_MARKET_CAP_USD
+                    }
+                }
+            })
             
     except Exception as e:
-        logger.error(f"Scan error: {e}")
-        return jsonify({"success": False, "message": f"scan error: {str(e)[:180]}"}), 500
-
-    return jsonify({
-        "success": True,
-        "tokens_found": len(tokens),
-        "tokens": tokens[:10]
-    })
+        print(f"[SCAN ERROR] {str(e)}", flush=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
 
 # =========================================
 # Main
