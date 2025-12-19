@@ -3,7 +3,7 @@
 
 """
 Rocket Sniper Bot - Web Server (Render)
-Version corrigée - sans erreurs de syntaxe
+Version complète avec toutes les modifications
 """
 
 from dotenv import load_dotenv
@@ -159,7 +159,13 @@ def home():
             "/health (GET)",
             "/debug_fetch (GET)",
             "/debug_fetch_new (GET)",
-            "/test_scan_simple (GET)"
+            "/test_scan_simple (GET)",
+            "/scan_direct (GET)",
+            "/scan_with_filters (GET)",
+            "/test_raydium_api (GET)",
+            "/debug_bot_state (GET)",
+            "/scan_raydium_birdeye (GET)",
+            "/update_config (POST)"
         ]
     })
 
@@ -355,6 +361,409 @@ def test_scan_simple():
             "error": str(e)
         })
 
+@app.route('/scan_direct')
+def scan_direct():
+    """Scan direct sans vérifier l'état du bot"""
+    import urllib.request
+    import json as json_module
+    import time
+    
+    try:
+        print("[SCAN DIRECT] Starting direct scan...", flush=True)
+        
+        # Utilise l'endpoint de recherche Raydium
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json_module.loads(response.read().decode('utf-8'))
+            all_pairs = data.get("pairs", [])
+            
+            print(f"[SCAN DIRECT] Got {len(all_pairs)} total pairs", flush=True)
+            
+            current_time = time.time()
+            filtered_tokens = []
+            
+            for pair in all_pairs:
+                # Vérifie que c'est Raydium
+                if pair.get('dexId') != 'raydium':
+                    continue
+                
+                # Calcule l'âge
+                created_at = pair.get('pairCreatedAt', 0)
+                if not created_at:
+                    continue
+                    
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                # Récupère les stats
+                liquidity = pair.get('liquidity', {}).get('usd', 0)
+                volume_24h = pair.get('volume', {}).get('h24', 0)
+                price = pair.get('priceUsd', 0)
+                
+                # **FILTRES RÉALISTES** pour nouveaux tokens Raydium
+                if (age_minutes >= 1 and age_minutes <= 60 and    # 1-60 minutes
+                    liquidity >= 5000 and                         # Liquidity > 5k (pas 50k)
+                    volume_24h >= 1000):                          # Volume > 1k (pas 100k)
+                    
+                    base_token = pair.get('baseToken', {})
+                    
+                    filtered_tokens.append({
+                        'address': base_token.get('address', ''),
+                        'symbol': base_token.get('symbol', ''),
+                        'name': base_token.get('name', ''),
+                        'liquidity': liquidity,
+                        'price': price,
+                        'volume_24h': volume_24h,
+                        'age_minutes': round(age_minutes, 2),
+                        'pair_address': pair.get('pairAddress', ''),
+                        'url': pair.get('url', '')
+                    })
+            
+            print(f"[SCAN DIRECT] Found {len(filtered_tokens)} matching tokens", flush=True)
+            
+            return jsonify({
+                "success": True,
+                "tokens": filtered_tokens[:20],
+                "tokens_found": len(filtered_tokens),
+                "debug": {
+                    "source": "DexScreener Raydium search",
+                    "total_pairs": len(all_pairs),
+                    "filters": {
+                        "age_min": 1,
+                        "age_max": 60,
+                        "min_liquidity": 5000,
+                        "min_volume": 1000
+                    }
+                }
+            })
+            
+    except Exception as e:
+        print(f"[SCAN DIRECT ERROR] {str(e)}", flush=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
+
+@app.route('/scan_with_filters')
+def scan_with_filters():
+    """Scan avec filtres réalistes pour Raydium"""
+    import urllib.request
+    import json as json_module
+    import time
+    
+    # FILTRES RÉALISTES pour Raydium
+    FILTERS = {
+        "min_age": 1,          # 1 minute minimum
+        "max_age": 180,        # 3 heures maximum
+        "min_liquidity": 10000, # 10k USD
+        "min_volume": 10000,   # 10k USD
+        "min_mcap": 100000     # 100k USD
+    }
+    
+    try:
+        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json_module.loads(response.read().decode('utf-8'))
+            all_pairs = data.get("pairs", [])
+            
+            current_time = time.time()
+            filtered_tokens = []
+            
+            for pair in all_pairs:
+                created_at = pair.get('pairCreatedAt', 0)
+                if not created_at:
+                    continue
+                    
+                age_seconds = current_time - (created_at / 1000)
+                age_minutes = age_seconds / 60
+                
+                liquidity = pair.get('liquidity', {}).get('usd', 0)
+                volume_24h = pair.get('volume', {}).get('h24', 0)
+                price = pair.get('priceUsd', 0)
+                
+                # Calculer market cap approximatif
+                base_token = pair.get('baseToken', {})
+                supply = base_token.get('totalSupply', 0)
+                market_cap = price * supply if supply and price else 0
+                
+                # Appliquer filtres
+                if (age_minutes >= FILTERS["min_age"] and 
+                    age_minutes <= FILTERS["max_age"] and
+                    liquidity >= FILTERS["min_liquidity"] and
+                    volume_24h >= FILTERS["min_volume"] and
+                    market_cap >= FILTERS["min_mcap"]):
+                    
+                    filtered_tokens.append({
+                        'address': base_token.get('address', ''),
+                        'symbol': base_token.get('symbol', ''),
+                        'name': base_token.get('name', ''),
+                        'liquidity': liquidity,
+                        'price': price,
+                        'volume_24h': volume_24h,
+                        'market_cap': market_cap,
+                        'age_minutes': round(age_minutes, 2),
+                        'pair_address': pair.get('pairAddress', ''),
+                        'url': pair.get('url', '')
+                    })
+            
+            # Trier par âge (plus récent d'abord)
+            filtered_tokens.sort(key=lambda x: x['age_minutes'])
+            
+            return jsonify({
+                "success": True,
+                "tokens": filtered_tokens[:20],
+                "tokens_found": len(filtered_tokens),
+                "filters_used": FILTERS,
+                "debug": {
+                    "total_pairs": len(all_pairs),
+                    "source": "DexScreener Raydium search"
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
+
+@app.route('/test_raydium_api')
+def test_raydium_api():
+    """Tester différents endpoints DexScreener pour Raydium"""
+    import urllib.request
+    import json as json_module
+    import time
+    
+    tests = [
+        {
+            "name": "Raydium search",
+            "url": "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=50"
+        },
+        {
+            "name": "Solana pairs with Raydium filter",
+            "url": "https://api.dexscreener.com/latest/dex/pairs/solana?dex=raydium&limit=50"
+        }
+    ]
+    
+    results = []
+    
+    for test in tests:
+        try:
+            print(f"[TEST] Testing: {test['name']}", flush=True)
+            start = time.time()
+            
+            req = urllib.request.Request(
+                test["url"],
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                elapsed = time.time() - start
+                data = json_module.loads(response.read().decode('utf-8'))
+                pairs = data.get("pairs", [])
+                
+                # Analyser l'âge des paires
+                current_time = time.time()
+                recent_pairs = []
+                
+                for pair in pairs[:10]:
+                    created_at = pair.get('pairCreatedAt', 0)
+                    if created_at:
+                        age_seconds = current_time - (created_at / 1000)
+                        age_minutes = age_seconds / 60
+                        
+                        if age_minutes <= 180:  # Moins de 3 heures
+                            recent_pairs.append({
+                                "symbol": pair.get('baseToken', {}).get('symbol', '?'),
+                                "age_minutes": round(age_minutes, 1),
+                                "liquidity": pair.get('liquidity', {}).get('usd', 0),
+                                "price": pair.get('priceUsd', 0),
+                                "volume_24h": pair.get('volume', {}).get('h24', 0)
+                            })
+                
+                results.append({
+                    "test": test["name"],
+                    "url": test["url"],
+                    "status": response.status,
+                    "total_pairs": len(pairs),
+                    "recent_pairs": len(recent_pairs),
+                    "sample": recent_pairs[:5],
+                    "time_ms": round(elapsed * 1000, 2)
+                })
+                
+        except Exception as e:
+            results.append({
+                "test": test["name"],
+                "error": str(e),
+                "status": "FAILED"
+            })
+    
+    return jsonify({"success": True, "tests": results})
+
+@app.route('/debug_bot_state')
+def debug_bot_state():
+    """Vérifie pourquoi /scan dit 'Bot non démarré'"""
+    return jsonify({
+        "bot_instance_exists": bot_instance is not None,
+        "bot_running": getattr(bot_instance, "running", False) if bot_instance else False,
+        "bot_engine_exists": getattr(bot_instance, "engine", None) is not None if bot_instance else False,
+        "bot_thread_alive": bot_thread.is_alive() if bot_thread else False,
+        "BOT_AVAILABLE": BOT_AVAILABLE
+    })
+
+@app.route('/scan_raydium_birdeye')
+def scan_raydium_birdeye_route():
+    """Scanner Raydium via Birdeye API"""
+    import requests
+    import time
+    
+    try:
+        # Obtenir la clé API depuis les variables d'environnement
+        api_key = os.environ.get('BIRDEYE_API_KEY')
+        if not api_key:
+            return jsonify({
+                "success": False,
+                "error": "BIRDEYE_API_KEY non définie",
+                "hint": "Obtenez une clé gratuite sur https://birdeye.so/"
+            })
+        
+        print("[BIRDEYE] Scanning via Birdeye API...", flush=True)
+        
+        url = "https://public-api.birdeye.so/public/tokenlist"
+        
+        params = {
+            "sort_by": "v24hUSD",
+            "sort_type": "desc",
+            "offset": 0,
+            "limit": 100
+        }
+        
+        headers = {
+            "X-API-KEY": api_key,
+            "User-Agent": "Mozilla/5.0"
+        }
+        
+        start = time.time()
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        elapsed = time.time() - start
+        
+        if response.status_code == 200:
+            data = response.json()
+            tokens = data.get("data", {}).get("tokens", [])
+            
+            print(f"[BIRDEYE] Found {len(tokens)} tokens", flush=True)
+            
+            # Filtrer pour Raydium seulement et tokens récents
+            current_time = time.time()
+            filtered_tokens = []
+            
+            for token in tokens:
+                # Vérifier si le token est sur Raydium
+                markets = token.get('markets', '')
+                if 'raydium' not in markets.lower():
+                    continue
+                
+                # Récupérer les données
+                address = token.get('address', '')
+                symbol = token.get('symbol', '')
+                name = token.get('name', '')
+                price = token.get('price', 0)
+                liquidity = token.get('liquidity', 0)
+                volume_24h = token.get('volume24h', 0)
+                market_cap = token.get('market_cap', 0)
+                
+                if (liquidity >= 10000 and      # 10k USD minimum
+                    volume_24h >= 10000 and     # 10k USD volume 24h
+                    market_cap >= 100000):      # 100k USD market cap
+                    
+                    filtered_tokens.append({
+                        'address': address,
+                        'symbol': symbol,
+                        'name': name,
+                        'liquidity': liquidity,
+                        'price': price,
+                        'volume_24h': volume_24h,
+                        'market_cap': market_cap,
+                        'source': 'Birdeye API',
+                        'age_minutes': 'N/A (Birdeye ne fournit pas cette info)'
+                    })
+            
+            print(f"[BIRDEYE] Found {len(filtered_tokens)} Raydium tokens matching criteria", flush=True)
+            
+            return jsonify({
+                "success": True,
+                "tokens": filtered_tokens[:20],
+                "tokens_found": len(filtered_tokens),
+                "debug": {
+                    "source": "Birdeye API",
+                    "total_tokens": len(tokens),
+                    "filters": {
+                        "min_liquidity": 10000,
+                        "min_volume": 10000,
+                        "min_mcap": 100000
+                    }
+                }
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"Birdeye API error: {response.status_code}",
+                "response": response.text[:200]
+            })
+            
+    except Exception as e:
+        print(f"[BIRDEYE ERROR] {str(e)}", flush=True)
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "tokens_found": 0
+        })
+
+@app.route("/update_config", methods=["POST"])
+def update_config():
+    """Mettre à jour la configuration du bot"""
+    try:
+        data = request.json or {}
+        
+        # Mettre à jour la configuration
+        if 'min_liquidity' in data:
+            Config.MIN_LIQUIDITY_USD = float(data['min_liquidity'])
+        if 'min_mcap' in data:
+            Config.MIN_MARKET_CAP_USD = float(data['min_mcap'])
+        if 'min_volume_24h' in data:
+            Config.MIN_VOLUME_24H_USD = float(data['min_volume_24h'])
+        if 'max_age' in data:
+            Config.MAX_AGE_MINUTES = int(data['max_age'])
+        if 'min_age' in data:
+            Config.MIN_AGE_MINUTES = int(data['min_age'])
+        
+        return jsonify({
+            "success": True,
+            "message": "Configuration mise à jour",
+            "new_config": {
+                "min_liquidity": Config.MIN_LIQUIDITY_USD,
+                "min_mcap": Config.MIN_MARKET_CAP_USD,
+                "min_volume_24h": Config.MIN_VOLUME_24H_USD,
+                "max_age": Config.MAX_AGE_MINUTES,
+                "min_age": Config.MIN_AGE_MINUTES
+            }
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
 @app.route("/start", methods=["GET", "POST"])
 def start_route():
     if not BOT_AVAILABLE:
@@ -477,96 +886,6 @@ def scan_route():
         "tokens_found": len(tokens),
         "tokens": tokens[:10]
     })
-
-@app.route('/scan_direct')
-def scan_direct():
-    """Scan direct sans vérifier l'état du bot"""
-    import urllib.request
-    import json as json_module
-    import time
-    
-    try:
-        print("[SCAN DIRECT] Starting direct scan...", flush=True)
-        
-        # Utilise l'endpoint de recherche Raydium
-        url = "https://api.dexscreener.com/latest/dex/search?q=raydium&limit=100"
-        
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json_module.loads(response.read().decode('utf-8'))
-            all_pairs = data.get("pairs", [])
-            
-            print(f"[SCAN DIRECT] Got {len(all_pairs)} total pairs", flush=True)
-            
-            current_time = time.time()
-            filtered_tokens = []
-            
-            for pair in all_pairs:
-                # Vérifie que c'est Raydium
-                if pair.get('dexId') != 'raydium':
-                    continue
-                
-                # Calcule l'âge
-                created_at = pair.get('pairCreatedAt', 0)
-                if not created_at:
-                    continue
-                    
-                age_seconds = current_time - (created_at / 1000)
-                age_minutes = age_seconds / 60
-                
-                # Récupère les stats
-                liquidity = pair.get('liquidity', {}).get('usd', 0)
-                volume_24h = pair.get('volume', {}).get('h24', 0)
-                price = pair.get('priceUsd', 0)
-                
-                # **FILTRES RÉALISTES** pour nouveaux tokens Raydium
-                if (age_minutes >= 1 and age_minutes <= 60 and    # 1-60 minutes
-                    liquidity >= 5000 and                         # Liquidity > 5k (pas 50k)
-                    volume_24h >= 1000):                          # Volume > 1k (pas 100k)
-                    
-                    base_token = pair.get('baseToken', {})
-                    
-                    filtered_tokens.append({
-                        'address': base_token.get('address', ''),
-                        'symbol': base_token.get('symbol', ''),
-                        'name': base_token.get('name', ''),
-                        'liquidity': liquidity,
-                        'price': price,
-                        'volume_24h': volume_24h,
-                        'age_minutes': round(age_minutes, 2),
-                        'pair_address': pair.get('pairAddress', ''),
-                        'url': pair.get('url', '')
-                    })
-            
-            print(f"[SCAN DIRECT] Found {len(filtered_tokens)} matching tokens", flush=True)
-            
-            return jsonify({
-                "success": True,
-                "tokens": filtered_tokens[:20],
-                "tokens_found": len(filtered_tokens),
-                "debug": {
-                    "source": "DexScreener Raydium search",
-                    "total_pairs": len(all_pairs),
-                    "filters": {
-                        "age_min": 1,
-                        "age_max": 60,
-                        "min_liquidity": 5000,
-                        "min_volume": 1000
-                    }
-                }
-            })
-            
-    except Exception as e:
-        print(f"[SCAN DIRECT ERROR] {str(e)}", flush=True)
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "tokens_found": 0
-        })
 
 # =========================================
 # Main
