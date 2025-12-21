@@ -450,6 +450,46 @@ def scan_with_filters():
             "tokens_found": 0
         })
 
+import requests
+
+def fetch_top_gainers():
+    # NOTE : Ceci est une URL exemple. Vous DEVEZ trouver la bonne.
+    # Essayez de chercher dans votre code de bot l'URL utilisée.
+    url = "https://api.dexscreener.com/latest/dex/..."
+    
+    filters = {
+        'min_liquidity_usd': 100000,
+        'min_volume_24h_usd': 1000000,
+        'min_makers': 1000,
+    }
+    
+    try:
+        response = requests.get(url)
+        data = response.json()
+        # Ajustez la logique ci-dessous selon la vraie structure de la réponse API
+        if 'pairs' in data:
+            for pair in data['pairs']:
+                liquidity = pair.get('liquidity', {}).get('usd', 0)
+                volume = pair.get('volume', {}).get('h24', 0)
+                makers = pair.get('txns', {}).get('h24', {}).get('makers', 0)
+                
+                if (liquidity > filters['min_liquidity_usd'] and
+                    volume > filters['min_volume_24h_usd'] and
+                    makers > filters['min_makers']):
+                    
+                    print(f"✓ Token Trouvé : {pair.get('baseToken', {}).get('symbol')}")
+                    print(f"   Prix : ${pair.get('priceUsd')}")
+                    print(f"   Volume 24h : ${volume}")
+                    print(f"   Liquidité : ${liquidity}")
+                    print(f"   Makers (24h) : {makers}")
+                    print("-" * 40)
+    except Exception as e:
+        print(f"Erreur : {e}")
+
+if __name__ == "__main__":
+    fetch_top_gainers()
+
+
 @app.route('/debug_bot_state')
 def debug_bot_state():
     """Vérifie pourquoi /scan dit 'Bot non démarré'"""
