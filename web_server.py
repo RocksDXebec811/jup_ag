@@ -72,18 +72,59 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-def send_telegram(msg: str) -> None:
-    """Envoie une alerte Telegram (si configuré)."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("⚠️ Telegram non configuré (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID manquants)")
+def send_telegram(msg: str):
+    tok = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat = os.getenv("TELEGRAM_CHAT_ID")
+    if not tok or not chat:
+        logger.warning("TELEGRAM env missing")
         return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}
+    url = f"https://api.telegram.org/bot{tok}/sendMessage"
+    payload = {"chat_id": chat, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        logger.warning(f"⚠️ Telegram send failed: {e}")
+        logger.warning(f"Telegram send error: {e}")
+
+@app.route("/early-pool", methods=["POST"])
+def early_pool():
+    data = request.json or {}
+
+    mint = data.get("mint", "")
+    age = data.get("age_minutes", -1)
+    liq = data.get("liquidity_usd", 0)
+    fdv = data.get("fdv_usd", 0)
+    price = data.get("price_usd", 0)
+    sig = data.get("signature", "")
+
+    msg = (
+        "🚀 <b>NEW RAYDIUM CLMM EARLY POOL</b>\n\n"
+        f"🧬 Mint: <code>{mint}</code>\n"
+        f"⏱ Age: {age:.1f} min\n"
+        f"💧 Liquidity: ${liq:,.0f}\n"
+        f"📊 FDV: ${fdv:,.0f}\n"
+        f"💵 Price: ${price:.10f}\n\n"
+        f"🔗 https://solscan.io/tx/{sig}\n"
+    )
+
+    send_telegram(msg)
+
+    # (Option B2) déclencher un buy automatique selon tes règles:
+    AUTO_BUY_ON_EARLY_POOL = True
+    MAX_FDV_BUY = 500_000
+    MAX_LIQ_BUY = 150_000
+    MAX_AGE_BUY = 30
+
+    if AUTO_BUY_ON_EARLY_POOL and mint and fdv and liq and age != -1:
+        if (fdv <= MAX_FDV_BUY) and (liq <= MAX_LIQ_BUY) and (age <= MAX_AGE_BUY):
+            try:
+                # ici tu appelles TON endpoint /buy interne si tu l'as, sinon ton bot
+                # requests.post("https://.../buy", json={"mint": mint, "amount_sol": 0.009}, timeout=15)
+                send_telegram(f"🟢 <b>AUTO BUY TRIGGER</b>\nMint: <code>{mint}</code>\nFDV: ${fdv:,.0f}\nLiq: ${liq:,.0f}")
+            except Exception as e:
+                send_telegram(f"🔴 Auto-buy error: {e}")
+
+    return jsonify({"ok": True})
+
 
 
 # =========================================
